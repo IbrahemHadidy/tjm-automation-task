@@ -1,0 +1,50 @@
+[project]
+name = "tjm-grounder-task"
+version = "0.1.0"
+description = "A take-home project for applying to Software Engineer Position at TJM Labs"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "google-genai>=1.60.0",
+    "numpy>=1.26.4,<2",
+    "opencv-python>=4.9.0.80",
+    "opencv-stubs>=0.1.1",
+    "pyautogui>=0.9.54",
+    "pyperclip>=1.11.0",
+    "pyqt6>=6.10.2",
+    "pytesseract>=0.3.13",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.0",
+    "pyright>=1.1.407",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.9",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ['opencv_solution', 'llm_solution']
+
+[tool.uv]
+package = true
+
+[project.scripts]
+start-opencv = "opencv_solution.gui:run"
+notepad-opencv = "opencv_solution.notepad_automation:run"
+start-llm = "llm_solution.gui:run"
+notepad-llm = "llm_solution.notepad_automation:run"
+
+[tool.pyright]
+typeCheckingMode = "basic"
+reportUnusedImport = "error"
+reportUnusedVariable = "error"
+reportGeneralTypeIssues = "error"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ['T201', 'BLE001', 'PLR2004', 'E501']
