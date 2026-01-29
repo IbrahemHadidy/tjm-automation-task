@@ -95,7 +95,7 @@ Leverage this interface for high-level task execution powered by large language 
 > * **Green '+' Sign**: Marks the precise coordinates determined by the AI's spatial reasoning.
 > * **Scoring**: Displays the probability/confidence score for each coordinate, indicating how likely it is to be the correct target.
 
-1. **Instruction**: Type a natural language command (e.g., "Find the Notepad icon and click it").
+1. **Instruction**: Type a natural language command (e.g., "Notepad Stortcut").
 2. **Reasoning Pipeline**: Monitor the console to see the step-by-step logic used to map your instruction to the screen.
 3. **Visual Validation**: Verify that the detected **Green '+'** marks align with your target elements before clicking **RUN**.
 
