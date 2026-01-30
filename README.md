@@ -97,15 +97,13 @@ Leverage this interface for high-level task execution powered by large language 
 
 1. **Instruction**: Type a natural language command (e.g., "Notepad Stortcut").
 2. **Reasoning Pipeline**: Monitor the console to see the step-by-step logic used to map your instruction to the screen.
-3. **Visual Validation**: Verify that the detected **Green '+'** marks align with your target elements before clicking **RUN**.
-
-4. **Target Scope**: Select the operational area, such as the "Entire Desktop."
-5. **Instruction**: Type your natural language command (e.g., "Find the Notepad icon and click it").
-6. **Visual Anchor**: Click **LOAD** to provide a reference image if the task requires specific visual grounding.
-7. **Reasoning Pipeline**: Monitor this section to see the step-by-step logic used to map instructions to coordinates.
-8. **Mapped Coordinates**: Review the generated **[X, Y]** locations and their associated probability scores.
-9. **Execution**: Click **RUN** to initiate the automated sequence.
-10. **Visual Validation**: Verify that the detected coordinate marks on the screen align with your target elements; this serves as the final debug check.
+3. **Target Scope**: Select the operational area, such as the "Entire Desktop."
+4. **Instruction**: Type your natural language command (e.g., "Find the Notepad icon and click it").
+5. **Visual Anchor**: Click **LOAD** to provide a reference image if the task requires specific visual grounding.
+6. **Reasoning Pipeline**: Monitor this section to see the step-by-step logic used to map instructions to coordinates.
+7. **Mapped Coordinates**: Review the generated **[X, Y]** locations and their associated probability scores.
+8. **Execution**: Click **RUN** to initiate the automated sequence.
+9. **Visual Validation**: Verify that the detected coordinate marks on the screen align with your target elements; this serves as the final debug check.
 
 ---
 
