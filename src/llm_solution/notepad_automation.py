@@ -90,6 +90,12 @@ class NotepadTask:
         ]
         return valid[0] if valid else None
 
+    def _validate_posts(self, posts: object) -> list[Post]:
+        if not isinstance(posts, list):
+            msg = "Unexpected API response format, expected list"
+            raise TypeError(msg)
+        return posts
+
     def launch_by_grounding(self) -> bool:
         """Minimize windows and use AI to double-click the Notepad icon."""
         pyautogui.hotkey("win", "m")
@@ -182,20 +188,34 @@ class NotepadTask:
 
         try:
             response = requests.get(self.posts_api, timeout=10)
-            posts: list[Post] = response.json()
+            response.raise_for_status()
+            raw_posts = response.json()
 
-            for post in posts[0:10]:
+            posts = self._validate_posts(raw_posts)
+
+            for post in posts[:10]:
                 print(f"\n[STEP] Post {post['id']}")
+
                 if self.launch_by_grounding():
                     self.save_and_close(post)
                 else:
                     print("[FATAL] Skipping post due to grounding failure.")
+
                 time.sleep(1.0)
+
+        except requests.RequestException as e:
+            print(f"[ERROR] Network/API failure: {e}")
+
+        except TypeError as e:
+            print(f"[ERROR] Invalid API payload: {e}")
+
         finally:
             self.engine.cleanup()
             self._restore_workspace_state()
-            if Path("raw_capture.png").exists():
-                Path("raw_capture.png").unlink()
+
+            temp = Path("raw_capture.png")
+            if temp.exists():
+                temp.unlink()
 
 
 def run() -> None:

@@ -6,10 +6,9 @@ and OCR detection strategies on desktop screenshots.
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
-import numpy as np
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
@@ -32,6 +31,9 @@ from PyQt6.QtWidgets import (
 )
 
 from opencv_solution.grounding_engine import DesktopGroundingEngine
+
+if TYPE_CHECKING:
+    import numpy as np
 
 # --- STYLING CONSTANTS ---
 BG_COLOR, SURFACE_COLOR, ACCENT_COLOR = "#0F0F0F", "#1A1A1A", "#00E5FF"
@@ -258,7 +260,7 @@ class GroundingLab(QMainWindow):
     def __init__(self) -> None:
         """Initialize the main window and setup UI components."""
         super().__init__()
-        self.setWindowTitle("VISION GROUNDING ENGINE v0.1")
+        self.setWindowTitle("VISION GROUNDING ENGINE v0.2")
         self.setMinimumSize(1400, 900)
         self.setStyleSheet(GLOBAL_STYLE)
         self.img_path: str | None = None
@@ -286,14 +288,31 @@ class GroundingLab(QMainWindow):
         input_f.addRow(self.btn_icon)
         sidebar.addWidget(input_group)
 
-        # --- 2. ENGINE TUNING ---
-        tuning_group = QGroupBox("Processing Passes")
-        tuning_v = QVBoxLayout(tuning_group)
+        # --- 2a. TEMPLATE MATCHING PASSES ---
+        template_group = QGroupBox("Template Matching Passes")
+        template_v = QVBoxLayout(template_group)
         self.chk_color = QCheckBox("Color Match (BGR)")
         self.chk_lab = QCheckBox("CIELAB Match (Lighting)")
         self.chk_edge = QCheckBox("Edge/Canny Match")
+        self.chk_gray = QCheckBox("Grayscale Match")
         self.chk_orb = QCheckBox("ORB (Rotation Invariant)")
         self.chk_multiscale = QCheckBox("Multi-Scale Sweep")
+
+        for chk in [
+            self.chk_color,
+            self.chk_lab,
+            self.chk_edge,
+            self.chk_gray,
+            self.chk_orb,
+            self.chk_multiscale,
+        ]:
+            chk.setChecked(True)
+            template_v.addWidget(chk)
+        sidebar.addWidget(template_group)
+
+        # --- 2b. OCR PASSES ---
+        ocr_group = QGroupBox("OCR Passes")
+        ocr_v = QVBoxLayout(ocr_group)
         self.chk_ocr = QCheckBox("Enable OCR Engine")
         self.chk_adaptive = QCheckBox("Adaptive Threshold")
         self.chk_sharpen = QCheckBox("OCR Sharpening")
@@ -301,23 +320,24 @@ class GroundingLab(QMainWindow):
         self.chk_iso = QCheckBox("RGB Isolation")
         self.chk_fusion = QCheckBox("Heuristic Fusion")
 
-        self.toggles = [
-            self.chk_color,
-            self.chk_lab,
-            self.chk_edge,
-            self.chk_orb,
-            self.chk_multiscale,
+        for chk in [
             self.chk_ocr,
             self.chk_adaptive,
             self.chk_sharpen,
             self.chk_upscale,
             self.chk_iso,
             self.chk_fusion,
-        ]
-        for chk in self.toggles:
+        ]:
             chk.setChecked(True)
-            tuning_v.addWidget(chk)
-        sidebar.addWidget(tuning_group)
+            ocr_v.addWidget(chk)
+        sidebar.addWidget(ocr_group)
+
+        # --- CONNECT INPUT EVENTS ---
+        self.btn_ss.clicked.connect(lambda: self.get_file("ss"))
+        self.btn_icon.clicked.connect(
+            lambda: [self.get_file("icon"), self.update_toggle_states()],
+        )
+        self.query_input.textChanged.connect(lambda _: self.update_toggle_states())
 
         # --- 3. SYSTEM CONFIG ---
         sys_group = QGroupBox("Engine Config")
@@ -329,7 +349,6 @@ class GroundingLab(QMainWindow):
         self.num_cores = QSpinBox()
         self.num_cores.setRange(1, 32)
         self.num_cores.setValue(8)
-
         sys_f.addRow("TESS PATH", self.tess_path)
         sys_f.addRow("CONFIDENCE", self.threshold)
         sys_f.addRow("THREADS", self.num_cores)
@@ -346,7 +365,6 @@ class GroundingLab(QMainWindow):
             f"background-color: {ERROR_COLOR}; color: white; border: none;",
         )
         self.btn_cancel.hide()
-
         action_v.addWidget(self.progress_bar)
         action_v.addWidget(self.btn_run)
         action_v.addWidget(self.btn_cancel)
@@ -354,12 +372,15 @@ class GroundingLab(QMainWindow):
 
         self.btn_copy = QPushButton("COPY BEST COORDINATES")
         self.btn_dump = QPushButton("DUMP SYSTEM LOGS")
-
+        self.btn_reset = QPushButton("RESET STATE")
+        sidebar.addWidget(self.btn_reset)
+        self.btn_reset.clicked.connect(self.reset_state)
         sidebar.addWidget(self.btn_copy)
         sidebar.addWidget(self.btn_dump)
         sidebar.addStretch()
         main_layout.addLayout(sidebar, 1)
 
+        # --- VIEWPORT ---
         viewport = QVBoxLayout()
         self.display = ZoomableLabel()
         self.display.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -372,8 +393,7 @@ class GroundingLab(QMainWindow):
         viewport.addWidget(self.console, 2)
         main_layout.addLayout(viewport, 4)
 
-        self.btn_ss.clicked.connect(lambda: self.get_file("ss"))
-        self.btn_icon.clicked.connect(lambda: self.get_file("icon"))
+        # --- CONNECT ACTION BUTTONS ---
         self.btn_run.clicked.connect(self.run_engine)
         self.btn_cancel.clicked.connect(self.cancel_engine)
         self.btn_copy.clicked.connect(self.copy_best)
@@ -428,6 +448,99 @@ class GroundingLab(QMainWindow):
                 self.icon_path = path
                 self.btn_icon.setText(f"✓ {Path(path).name}")
 
+    def update_toggle_states(self) -> None:
+        """Update UI elements based on whether icon or text input is present."""
+        icon_selected = bool(self.icon_path)
+        text_entered = bool(self.query_input.text().strip())
+
+        # --- TEMPLATE PASS CHECKBOXES ---
+        template_checkboxes = [
+            self.chk_color,
+            self.chk_lab,
+            self.chk_edge,
+            self.chk_gray,
+            self.chk_orb,
+            self.chk_multiscale,
+        ]
+        for chk in template_checkboxes:
+            chk.setEnabled(icon_selected)
+            chk.setToolTip("" if icon_selected else "Select an icon first")
+
+        # --- OCR PASS CHECKBOXES ---
+        ocr_checkboxes = [
+            self.chk_ocr,
+            self.chk_adaptive,
+            self.chk_sharpen,
+            self.chk_upscale,
+            self.chk_iso,
+            self.chk_fusion,
+        ]
+        for chk in ocr_checkboxes:
+            chk.setEnabled(text_entered)
+            chk.setToolTip("" if text_entered else "Enter text to enable OCR options")
+
+        # --- RUN BUTTON ---
+        self.btn_run.setEnabled(icon_selected or text_entered)
+        self.btn_run.setToolTip(
+            ""
+            if icon_selected or text_entered
+            else "Provide a template or text to start",
+        )
+
+    def reset_state(self) -> None:
+        """Reset the entire UI to its initial state."""
+        # Clear file paths
+        self.img_path = None
+        self.icon_path = None
+
+        # Reset buttons
+        self.btn_ss.setText("SELECT SCREENSHOT")
+        self.btn_icon.setText("SELECT ICON")
+
+        # Clear text input
+        self.query_input.clear()
+
+        # Reset checkboxes
+        for chk in [
+            self.chk_color,
+            self.chk_lab,
+            self.chk_edge,
+            self.chk_gray,
+            self.chk_orb,
+            self.chk_multiscale,
+            self.chk_ocr,
+            self.chk_adaptive,
+            self.chk_sharpen,
+            self.chk_upscale,
+            self.chk_iso,
+            self.chk_fusion,
+        ]:
+            chk.setChecked(True)
+
+        # Reset engine config
+        self.threshold.setValue(0.80)
+        self.num_cores.setValue(8)
+
+        # Reset progress and cancel button
+        self.progress_bar.setValue(0)
+        self.btn_run.setEnabled(False)
+        self.btn_run.setObjectName("action_btn_idle")
+        self.btn_run.setText("START DIAGNOSTICS")
+        self.btn_cancel.hide()
+
+        # Clear viewport
+        self.display.set_frame(None)
+        self.display.clear()
+
+        # Clear console
+        self.console.clear()
+
+        # Clear last results
+        self.last_results = []
+
+        # Update toggle states (to correctly disable checkboxes)
+        self.update_toggle_states()
+
     def run_engine(self) -> None:
         """Start the grounding engine diagnostics in a background thread."""
         if not self.img_path:
@@ -447,6 +560,7 @@ class GroundingLab(QMainWindow):
                 "use_color",
                 "use_lab",
                 "use_edge",
+                "use_gray",
                 "use_orb",
                 "use_multiscale",
                 "use_adaptive",

@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import platform
+
+if platform.system() == "Windows":
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        logging.exception("DPI awareness failed")  # noqa: LOG015
+
 import json
 import os
 import re

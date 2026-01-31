@@ -1,21 +1,47 @@
-"""Provide computer vision and OCR capabilities for locating desktop elements.
+"""DesktopGroundingEngine.
 
-This module contains the DesktopGroundingEngine, which combines template matching,
-feature detection, and OCR to identify UI elements and icons on a screen.
+Provides computer vision and OCR capabilities for locating desktop UI elements.
+
+This module implements the `DesktopGroundingEngine`, which combines:
+- Template matching (BGR, CIELAB, grayscale, edge-based)
+- ORB feature matching
+- Deep OCR sweeps (via Tesseract)
+
+It is designed for detecting icons and text labels on a desktop screenshot,
+returning ranked candidates with coordinates, scores, and method metadata.
 """
+
+import logging
+import platform
+
+if platform.system() == "Windows":
+    try:
+        import ctypes
+
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        logger = logging.getLogger(__name__)
+        logger.exception("DPI awareness failed")
 
 import concurrent.futures
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, ParamSpec
 
 import cv2
 import numpy as np
 import pytesseract
-from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
+
+    from cv2.typing import MatLike
+    from numpy.typing import NDArray
+
+
+P = ParamSpec("P")
 
 
 @dataclass
@@ -29,7 +55,7 @@ class Candidate:
     img_score: float = 0.0
     txt_score: float = 0.0
     bbox: tuple[int, int, int, int] | None = None
-    geometry_score: float = 1.0  # Added: spatial consistency score
+    geometry_score: float = 1.0
 
 
 @dataclass
@@ -80,7 +106,7 @@ class DesktopGroundingEngine:
         # Fallback: Return the highest absolute score regardless of method
         return max(candidates, key=lambda c: c.score)
 
-    def locate_elements(  # noqa: C901, PLR0912, PLR0913, PLR0915
+    def locate_elements(  # noqa: PLR0913
         self,
         screenshot_path: Path,
         icon_image: Path | None,
@@ -94,180 +120,260 @@ class DesktopGroundingEngine:
         """Locate screen elements by orchestrating template matching and OCR sweeps."""
         self.perf_stats = []
         safe_config: dict[str, Any] = config or {}
+        t0 = time.time()
 
-        def log_and_show(
-            msg: str,
-            frame: NDArray | None = None,
-            lvl: str = "INFO",
-            progress: int | None = None,
-        ) -> None:
-            if self.should_abort():
-                return
-            if frame is not None:
-                if len(frame.shape) == 2:
-                    self.debug_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-                else:
-                    self.debug_frame = frame.copy()
-            if callback:
-                callback(msg, lvl, progress)
-
-        img: NDArray = cv2.imread(str(screenshot_path))
-
-        if safe_config.get("use_adaptive"):
-            log_and_show(
-                "PRE-PROCESS: Applying Adaptive Contrast Enhancement",
-                progress=7,
-            )
-            img = self._enhance_contrast_adaptive(img)
-
-        h_hay, w_hay = img.shape[:2]
-        desktop_roi: NDArray = img[0 : h_hay - 60, 0:w_hay]
-        log_and_show("INIT: Screenshot Loaded", desktop_roi, progress=5)
+        img = self._load_and_preprocess_screenshot(
+            screenshot_path,
+            safe_config,
+            callback,
+        )
+        desktop_roi = self._crop_desktop_roi(img)
+        self._log("INIT: Screenshot Loaded", desktop_roi, callback, progress=5)
 
         if self.should_abort():
             return []
 
-        target_size: int = self._detect_desktop_icon_size(desktop_roi, log_and_show)
-        num_workers: int = int(safe_config.get("num_cores", 6))
-        t0: float = time.time()
+        target_size = self._detect_desktop_icon_size(
+            desktop_roi,
+            lambda *a, **kw: self._log(*a, callback=callback, **kw),
+        )
+        template_hits = self._run_template_passes(
+            desktop_roi,
+            icon_image,
+            target_size,
+            safe_config,
+            callback,
+        )
+        ocr_hits = self._run_ocr(
+            desktop_roi,
+            text_query,
+            psm,
+            scale,
+            safe_config,
+            callback,
+        )
 
-        all_template_hits: list[Candidate] = []
-        if icon_image:
-            log_and_show(
-                f"START: Template matching suite (Size: {target_size}px)",
-                progress=10,
-            )
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=num_workers,
-            ) as executor:
-                futures: list[concurrent.futures.Future[list[Candidate]]] = []
-                pass_configs = [
-                    ("use_color", "Color Pass", self._run_color_pass),
-                    ("use_lab", "CIELAB Pass", self._run_lab_pass),
-                    ("use_edge", "Edge Pass", self._run_edge_pass),
-                    ("use_orb", "ORB Pass", self._run_orb_pass),
-                ]
-
-                for cfg_key, name, func in pass_configs:
-                    if safe_config.get(cfg_key):
-                        futures.append(
-                            executor.submit(
-                                self._timed_wrapper,
-                                name,
-                                func,
-                                desktop_roi,
-                                icon_image,
-                                target_size if name != "ORB Pass" else 0,
-                                log_and_show,
-                            ),
-                        )
-
-                if safe_config.get("use_multiscale"):
-                    new_futures = [
-                        executor.submit(
-                            self._timed_wrapper,
-                            f"Scale {s_factor}x",
-                            self._run_scaled_pass,
-                            desktop_roi,
-                            icon_image,
-                            target_size,
-                            s_factor,
-                            log_and_show,
-                        )
-                        for s_factor in [0.8, 1.25]
-                    ]
-                    futures.extend(new_futures)
-
-                for future in concurrent.futures.as_completed(futures):
-                    if self.should_abort():
-                        break
-                    all_template_hits.extend(future.result())
-
-        log_and_show("Template Suite Completed", progress=40)
-        if self.should_abort():
-            return []
-
-        ocr_list: list[Candidate] = []
-        if text_query and safe_config.get("use_ocr"):
-            t_ocr = time.time()
-            ocr_list = self._ocr_search_deep(
+        templates = self._validate_templates(
+            icon_image,
+            self._non_max_suppression(template_hits, target_size),
+        )
+        ocr_hits.extend(
+            self._targeted_recovery(
                 desktop_roi,
-                text_query,
-                psm,
-                scale,
-                safe_config,
-                log_and_show,
-            )
-            self.perf_stats.append(
-                PerfStat(
-                    "OCR Global Sweep",
-                    (time.time() - t_ocr) * 1000,
-                    len(ocr_list),
-                ),
-            )
-
-        log_and_show("OCR Sweep Completed", progress=80)
-        if self.should_abort():
-            return []
-
-        templates = self._non_max_suppression(all_template_hits, target_size)
-
-        # New Feature: Verify geometric consistency if an icon was provided
-        if icon_image and templates:
-            templates = self._validate_spatial_consistency(icon_image, templates)
-
-        if templates and text_query:
-            recovery_queue = templates[:12]
-            log_and_show(
-                f"RECOVERY: Verifying {len(recovery_queue)} candidates...",
-                progress=82,
-            )
-            t_rec = time.time()
-            recovery_hits = self._targeted_label_recovery(
-                desktop_roi,
-                recovery_queue,
+                templates,
                 text_query,
                 target_size,
-                log_and_show,
-            )
-            ocr_list.extend(recovery_hits)
-            self.perf_stats.append(
-                PerfStat(
-                    "Targeted Recovery",
-                    (time.time() - t_rec) * 1000,
-                    len(recovery_hits),
-                ),
-            )
+                callback,
+            ),
+        )
 
-        log_and_show("Finalizing Fusion...", progress=90)
         final_candidates = self._finalize_results(
             templates,
-            ocr_list,
+            ocr_hits,
             target_size,
             threshold,
             safe_config,
         )
+        self._report_results(desktop_roi, final_candidates, t0, callback)
+        return final_candidates
 
-        final_viz = self._draw_results(desktop_roi, final_candidates)
+    def _log(
+        self,
+        msg: str,
+        frame: NDArray | None = None,
+        callback: Callable[[str, str, int | None], None] | None = None,
+        lvl: str = "INFO",
+        progress: int | None = None,
+    ) -> None:
+        if self.should_abort():
+            return
+        if frame is not None:
+            self.debug_frame = (
+                cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                if len(frame.shape) == 2
+                else frame.copy()
+            )
+        if callback:
+            callback(msg, lvl, progress)
+
+    def _load_and_preprocess_screenshot(
+        self,
+        path: Path,
+        config: dict[str, Any],
+        callback: Callable[[str, str, int | None], None] | None = None,
+    ) -> MatLike:
+        img = cv2.imread(str(path))
+        if img is None:
+            msg = f"Failed to load screenshot at {path}"
+            raise FileNotFoundError(msg)
+        if config.get("use_adaptive"):
+            self._log(
+                "PRE-PROCESS: Applying Adaptive Contrast Enhancement",
+                callback=callback,
+                progress=7,
+            )
+            img = self._enhance_contrast_adaptive(img)
+        return img
+
+    def _crop_desktop_roi(self, img: NDArray) -> NDArray:
+        h, w = img.shape[:2]
+        return img[0 : h - 60, 0:w]
+
+    def _run_template_passes(
+        self,
+        roi: NDArray,
+        icon: Path | None,
+        target_size: int,
+        config: dict[str, Any],
+        callback: Callable[[str, str, int | None], None] | None = None,
+    ) -> list[Candidate]:
+        if not icon:
+            return []
+        self._log(
+            f"START: Template matching suite (Size: {target_size}px)",
+            callback=callback,
+            progress=10,
+        )
+        all_hits: list[Candidate] = []
+        num_workers = int(config.get("num_cores", 6))
+        pass_configs = [
+            ("use_color", "Color Pass", self._run_color_pass),
+            ("use_lab", "CIELAB Pass", self._run_lab_pass),
+            ("use_edge", "Edge Pass", self._run_edge_pass),
+            ("use_gray", "Grayscale Pass", self._run_gray_pass),
+            ("use_orb", "ORB Pass", self._run_orb_pass),
+        ]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(
+                    self._timed_wrapper,
+                    name,
+                    func,
+                    roi,
+                    icon,
+                    target_size if name != "ORB Pass" else 0,
+                    lambda *a, **kw: self._log(*a, callback=callback, **kw),
+                )
+                for cfg_key, name, func in pass_configs
+                if config.get(cfg_key)
+            ]
+
+            if config.get("use_multiscale"):
+                futures.extend(
+                    [
+                        executor.submit(
+                            self._timed_wrapper,
+                            f"Scale {s_factor}x",
+                            self._run_scaled_pass,
+                            roi,
+                            icon,
+                            target_size,
+                            s_factor,
+                            lambda *a, **kw: self._log(*a, callback=callback, **kw),
+                        )
+                        for s_factor in [0.8, 1.25]
+                    ],
+                )
+
+            for future in concurrent.futures.as_completed(futures):
+                if self.should_abort():
+                    break
+                all_hits.extend(future.result())
+
+        self._log("Template Suite Completed", callback=callback, progress=40)
+        return all_hits
+
+    def _run_ocr(  # noqa: PLR0913
+        self,
+        roi: NDArray,
+        text_query: str,
+        psm: int,
+        scale: float,
+        config: dict[str, Any],
+        callback: Callable[[str, str, int | None], None] | None = None,
+    ) -> list[Candidate]:
+        if not text_query or not config.get("use_ocr"):
+            return []
+        t0 = time.time()
+        hits = self._ocr_search_deep(
+            roi,
+            text_query,
+            psm,
+            scale,
+            config,
+            lambda *a, **kw: self._log(*a, callback=callback, **kw),
+        )
+        self.perf_stats.append(
+            PerfStat("OCR Global Sweep", (time.time() - t0) * 1000, len(hits)),
+        )
+        self._log("OCR Sweep Completed", callback=callback, progress=80)
+        return hits
+
+    def _validate_templates(
+        self,
+        icon: Path | None,
+        templates: list[Candidate],
+    ) -> list[Candidate]:
+        return (
+            self._validate_spatial_consistency(icon, templates)
+            if icon and templates
+            else templates
+        )
+
+    def _targeted_recovery(
+        self,
+        roi: NDArray,
+        templates: list[Candidate],
+        text_query: str,
+        target_size: int,
+        callback: Callable[[str, str, int | None], None] | None = None,
+    ) -> list[Candidate]:
+        if not templates or not text_query:
+            return []
+        queue = templates[:12]
+        self._log(
+            f"RECOVERY: Verifying {len(queue)} candidates...",
+            callback=callback,
+            progress=82,
+        )
+        t0 = time.time()
+        hits = self._targeted_label_recovery(
+            roi,
+            queue,
+            text_query,
+            target_size,
+            lambda *a, **kw: self._log(*a, callback=callback, **kw),
+        )
+        self.perf_stats.append(
+            PerfStat("Targeted Recovery", (time.time() - t0) * 1000, len(hits)),
+        )
+        return hits
+
+    def _report_results(
+        self,
+        roi: NDArray,
+        candidates: list[Candidate],
+        t0: float,
+        callback: Callable[[str, str, int | None], None] | None = None,
+    ) -> None:
+        final_viz = self._draw_results(roi, candidates)
         self._gui_benchmark_report((time.time() - t0) * 1000, callback)
-
-        if callback and final_candidates:
+        if callback and candidates:
             header = f"| {'ID':<4} | {'Method':<15} | {'Score':<8} | {'Coords':<15} |"
             divider = f"|{'-' * 6}|{'-' * 17}|{'-' * 10}|{'-' * 17}|"
             table = ["### Candidate Detection Summary", header, divider]
-            for i, c in enumerate(final_candidates):
+            for i, c in enumerate(candidates):
                 coords = f"({c.x}, {c.y})"
                 table.append(
                     f"| {i + 1:<4} | {c.method:<15} | {c.score:<8.2f} | {coords:<15} |",
                 )
             callback("\n".join(table), "INFO", 100)
-
-        log_and_show(
-            f"FINISH: Found {len(final_candidates)} total candidates",
+        self._log(
+            f"FINISH: Found {len(candidates)} total candidates",
             final_viz,
+            callback=callback,
             progress=100,
         )
-        return final_candidates
 
     def _targeted_label_recovery(
         self,
@@ -328,7 +434,7 @@ class DesktopGroundingEngine:
 
     def _ocr_search_deep(
         self,
-        r: NDArray,
+        r: MatLike,
         q: str,
         psm: int,
         _s: float,
@@ -380,7 +486,7 @@ class DesktopGroundingEngine:
 
     def _run_color_pass(
         self,
-        r: NDArray,
+        r: MatLike,
         p: Path,
         tw: int,
         cb: Callable[..., Any],
@@ -388,17 +494,17 @@ class DesktopGroundingEngine:
         """Run a standard BGR color-based template matching pass."""
         tpl, m, th = self._prep_tpl(p, tw)
         res = cv2.matchTemplate(
-            cast("Any", r),
-            cast("Any", tpl),
+            r,
+            tpl,
             cv2.TM_CCOEFF_NORMED,
-            mask=cast("Any", m),
+            mask=m,
         )
         cb("PREP: Color Template", tpl, progress=15)
         return self._extract_tpl_locs(res, 0.7, tw, th, "tpl_color")
 
     def _run_lab_pass(
         self,
-        r: NDArray,
+        r: MatLike,
         p: Path,
         tw: int,
         cb: Callable[..., Any],
@@ -406,8 +512,8 @@ class DesktopGroundingEngine:
         """Run a template matching pass in the CIELAB color space for illumination invariance."""
         tpl_b, _, th = self._prep_tpl(p, tw)
         res = cv2.matchTemplate(
-            cast("Any", cv2.cvtColor(cast("Any", r), cv2.COLOR_BGR2Lab)),
-            cast("Any", cv2.cvtColor(cast("Any", tpl_b), cv2.COLOR_BGR2Lab)),
+            cv2.cvtColor(r, cv2.COLOR_BGR2Lab),
+            cv2.cvtColor(tpl_b, cv2.COLOR_BGR2Lab),
             cv2.TM_CCOEFF_NORMED,
         )
         cb("PREP: Lab Template", tpl_b, progress=20)
@@ -415,7 +521,7 @@ class DesktopGroundingEngine:
 
     def _run_edge_pass(
         self,
-        r: NDArray,
+        r: MatLike,
         p: Path,
         tw: int,
         cb: Callable[..., Any],
@@ -424,37 +530,59 @@ class DesktopGroundingEngine:
         tpl_b, _, th = self._prep_tpl(p, tw)
         re = cv2.Canny(cv2.cvtColor(r, cv2.COLOR_BGR2GRAY), 50, 150)
         te = cv2.Canny(cv2.cvtColor(tpl_b, cv2.COLOR_BGR2GRAY), 50, 150)
-        res = cv2.matchTemplate(cast("Any", re), cast("Any", te), cv2.TM_CCOEFF_NORMED)
+        res = cv2.matchTemplate(re, te, cv2.TM_CCOEFF_NORMED)
         cb("PREP: Edge Map", re, progress=25)
         return self._extract_tpl_locs(res, 0.4, tw, th, "tpl_edge")
 
+    def _run_gray_pass(
+        self,
+        r: MatLike,
+        p: Path,
+        tw: int,
+        cb: Callable[..., Any],
+    ) -> list[Candidate]:
+        """Run grayscale template matching (intensity-based)."""
+        tpl_b, _, th = self._prep_tpl(p, tw)
+
+        gray_r = cv2.cvtColor(r, cv2.COLOR_BGR2GRAY)
+        gray_t = cv2.cvtColor(tpl_b, cv2.COLOR_BGR2GRAY)
+
+        res = cv2.matchTemplate(
+            gray_r,
+            gray_t,
+            cv2.TM_CCOEFF_NORMED,
+        )
+
+        cb("PREP: Grayscale Template", gray_r, progress=23)
+        return self._extract_tpl_locs(res, 0.65, tw, th, "tpl_gray")
+
     def _run_orb_pass(
         self,
-        r: NDArray,
+        r: MatLike,
         p: Path,
         _: int,
         _cb: Callable[..., Any],
     ) -> list[Candidate]:
         """Run an ORB feature-based matching pass to find keypoint clusters."""
-        tpl = cast("Any", cv2.imread(str(p)))
+        tpl = cv2.imread(str(p))
         if tpl is None:
             return []
-        orb = cv2.ORB_create(1000)
-        _, d1 = orb.detectAndCompute(tpl, None)
-        k2, d2 = orb.detectAndCompute(cast("Any", r), None)
+        orb = cv2.ORB.create(nfeatures=1000)
+        _k1, d1 = orb.detectAndCompute(tpl, None)
+        k2, d2 = orb.detectAndCompute(r, None)
         if d1 is None or d2 is None:
             return []
-        bf = cv2.BFMatcher_create(cv2.NORM_HAMMING, crossCheck=True)
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         m = sorted(bf.match(d1, d2), key=lambda x: x.distance)
         if len(m) > 15:
-            pts = np.float32(cast("Any", [k2[i.trainIdx].pt for i in m[:20]]))
+            pts = np.array([k2[i.trainIdx].pt for i in m[:20]], dtype=np.float32)
             center = np.mean(pts, axis=0)
             return [Candidate(int(center[0]), int(center[1]), 0.9, "orb")]
         return []
 
     def _run_scaled_pass(
         self,
-        r: NDArray,
+        r: MatLike,
         p: Path,
         tw: int,
         sf: float,
@@ -466,16 +594,19 @@ class DesktopGroundingEngine:
         if tpl.shape[0] > r.shape[0] or tpl.shape[1] > r.shape[1]:
             return []
         res = cv2.matchTemplate(
-            cast("Any", r),
-            cast("Any", tpl),
+            r,
+            tpl,
             cv2.TM_CCOEFF_NORMED,
-            mask=cast("Any", m),
+            mask=m,
         )
         return self._extract_tpl_locs(res, 0.65, stw, th, f"scale_{sf}")
 
-    def _prep_tpl(self, path: Path, tw: int) -> tuple[NDArray, NDArray | None, int]:
+    def _prep_tpl(self, path: Path, tw: int) -> tuple[MatLike, MatLike | None, int]:
         """Prepare a template image by resizing and extracting alpha masks if available."""
         tpl_raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if tpl_raw is None:
+            msg = f"Failed to load template at {path}"
+            raise FileNotFoundError(msg)
         scale = tw / tpl_raw.shape[1]
         th = int(tpl_raw.shape[0] * scale)
         mask = (
@@ -531,7 +662,7 @@ class DesktopGroundingEngine:
                 else (255, 255, 0)
             )
             cv2.drawMarker(
-                cast("Any", viz),
+                viz,
                 (c.x, c.y),
                 color,
                 cv2.MARKER_SQUARE
@@ -572,12 +703,13 @@ class DesktopGroundingEngine:
     def _timed_wrapper(
         self,
         name: str,
-        func: Callable[..., list[Candidate]],
-        *args: Any,  # noqa: ANN401
+        func: Callable[P, list[Candidate]],
+        *args: P.args,
+        **kwargs: P.kwargs,
     ) -> list[Candidate]:
         """Wrap a function call to measure its execution time and log performance."""
         t0 = time.time()
-        res = func(*args)
+        res = func(*args, **kwargs)
         self.perf_stats.append(PerfStat(name, (time.time() - t0) * 1000, len(res)))
         return res
 
@@ -597,7 +729,7 @@ class DesktopGroundingEngine:
         report.extend(new_entries)
         callback("\n".join(report), "HEAD", 100)
 
-    def _apply_deep_ocr_preprocessing(self, r: NDArray, p_num: int) -> NDArray:
+    def _apply_deep_ocr_preprocessing(self, r: MatLike, p_num: int) -> MatLike:
         """Apply a specific image preprocessing pipeline for deep OCR detection."""
         g = cv2.cvtColor(r, cv2.COLOR_BGR2GRAY)
         if p_num == 1:
@@ -713,11 +845,11 @@ class DesktopGroundingEngine:
 
         return validated_hits
 
-    def _enhance_contrast_adaptive(self, img: NDArray) -> NDArray:
+    def _enhance_contrast_adaptive(self, img: MatLike) -> MatLike:
         """Apply adaptive histogram equalization to improve text visibility."""
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-        channels = list[NDArray](cv2.split(lab))
+        channels = list(cv2.split(lab))
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         channels[0] = clahe.apply(channels[0])
-        limg = cv2.merge(cast("NDArray", channels))
+        limg = cv2.merge(channels)
         return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)

@@ -143,6 +143,7 @@ The core detection engine uses a heuristic fusion approach to rank candidates. C
 | **use_color** | Apply BGR color distribution filtering to matches. |
 | **use_multiscale** | Perform template matching at multiple resolutions (0.5x to 1.5x). |
 | **use_lab** | Use CIELAB color space for better accuracy under varying light. |
+| **use_gray** | Perform intensity-based grayscale template matching. Useful when color information is unreliable. |
 | **use_orb** | Utilize ORB feature descriptors for rotation and scale invariance. |
 | **use_edge** | Match elements based on structural outlines and shapes (Canny edge detection). |
 | **use_adaptive** | Use local pixel intensity to handle varying lighting for better segmentation. |

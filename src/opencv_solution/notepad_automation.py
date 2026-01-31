@@ -6,6 +6,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TypedDict
 
+import cv2
 import pyautogui
 import pygetwindow as gw
 import pyperclip
@@ -62,7 +63,7 @@ class NotepadTask:
                 w.restore()
                 w.activate()
 
-    def _get_active_notepad(self) -> "gw.Win32Window | None":
+    def _get_active_notepad(self) -> gw.Win32Window | None:
         """Find the Notepad window that is actually visible."""
         valid = [
             w
@@ -70,6 +71,12 @@ class NotepadTask:
             if w.visible and not w.isMinimized
         ]
         return valid[0] if valid else None
+
+    def _validate_posts(self, posts: object) -> list[Post]:
+        if not isinstance(posts, list):
+            msg = "Unexpected API response format, expected list"
+            raise TypeError(msg)
+        return posts
 
     def launch_by_grounding(self) -> bool:
         """Force a desktop scan and open Notepad via icon/text detection."""
@@ -117,7 +124,27 @@ class NotepadTask:
             f"Text: {best_cand.txt_score:.2f}",
         )
 
-        pyautogui.doubleClick(best_cand.x, best_cand.y)
+        screen_w, screen_h = pyautogui.size()
+        img = cv2.imread(str(temp_ss))
+        if img is None:
+            print("[ERROR] Could not read screenshot file.")
+            return False
+
+        img_h, img_w = img.shape[:2]
+        scale_x = screen_w / img_w
+        scale_y = screen_h / img_h
+
+        screen_x = int(best_cand.x * scale_x)
+        screen_y = int(best_cand.y * scale_y)
+
+        # bounds check
+        if not (0 <= screen_x < screen_w and 0 <= screen_y < screen_h):
+            print(
+                f"[ERROR] Candidate coords out of screen bounds: ({screen_x},{screen_y})",
+            )
+            return False
+
+        pyautogui.doubleClick(screen_x, screen_y)
 
         # Verification loop
         for _ in range(12):
@@ -206,9 +233,18 @@ class NotepadTask:
 
         try:
             response = requests.get(self.posts_api, timeout=10)
+            response.raise_for_status()
             posts = response.json()
+            self._validate_posts(posts)
 
-            for post in posts[0:10]:
+        except requests.RequestException as e:
+            print(f"[ERROR] Network/API failure: {e}")
+
+        except TypeError as e:
+            print(f"[ERROR] Invalid API payload: {e}")
+
+        try:
+            for post in posts[:10]:
                 print(f"\n[STEP] Post {post['id']}")
 
                 if self.launch_by_grounding():
