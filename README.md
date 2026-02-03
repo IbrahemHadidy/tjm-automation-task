@@ -1,149 +1,82 @@
-# Vision Grounding Engine & Notepad Automation
+# AI-Powered Vision Grounding & Notepad Automation
 
-An advanced computer vision toolkit designed to bridge the gap between high-level intent and low-level GUI interaction. This repository provides a dual-engine architecture, offering both a high-speed **OpenCV Grounding Engine** for deterministic precision and an **AI LLM Reasoning Engine** for semantic, context-aware desktop interaction.
+This repository features a cutting-edge **AI LLM Reasoning Engine** designed for semantic, context-aware desktop interaction. While an OpenCV-based module is included for benchmarking, the **LLM-based architecture is the primary solution** for production.
+
+The LLM engine resolves the fundamental flaws of traditional computer vision, specifically the inaccurate scoring logic and the inability of template matching to handle non-default icon sizes.
 
 ---
 
-## 🚀 Execution Commands
+## 🚀 Primary Execution (AI Agent)
 
-This project uses `uv` for lightning-fast dependency management and script execution.
+This project uses `uv` for lightning-fast dependency management. The LLM commands provide the most stable, production-ready experience.
 
 | Command | Action |
 | :--- | :--- |
 | **`uv sync`** | Install all dependencies and synchronize the virtual environment. |
-| **`uv run start-opencv`** | Open the OpenCV-based PyQt6 Diagnostic Lab. |
-| **`uv run notepad-opencv`** | Execute the Notepad automation task using the OpenCV engine. |
-| **`uv run start-llm`** | Open the LLM-based Reasoning GUI. |
-| **`uv run notepad-llm`** | Execute the Notepad automation task using the LLM engine. |
+| **`uv run start-llm`** | **Launch the primary AI Reasoning GUI.** |
+| **`uv run notepad-llm`** | **Execute the automated Notepad task via LLM reasoning.** |
+| `uv run start-opencv` | *Optional:* Open legacy OpenCV diagnostic lab. |
+| `uv run notepad-opencv` | *Optional:* Run legacy OpenCV automation (Prone to failure). |
 
 ---
 
 ## 📂 Repository Structure (`src/`)
 
-The repository is organized to separate low-level vision logic from high-level AI reasoning while sharing core utility services.
+The architecture prioritizes high-level AI reasoning, using shared services only for basic OS-level tasks.
 
-* **`screenshot_service.py`**: A shared service used by both engines to capture the desktop or specific application windows. It includes **Workspace Recovery** logic to minimize windows for a clean scan and restore them post-execution.
-
-### 📁 `opencv_solution/` & `llm_solution/`
-
-Both solution folders contain a unified set of components:
-
-1. **`grounding_engine.py`**: The "brain" of the solution. The OpenCV version uses heuristic fusion (OCR, templates, edges), while the LLM version uses vision-language models to locate coordinates.
-2. **`gui.py`**: The PyQt6 graphical interface tailored to that specific engine's parameters and debug views.
-3. **`notepad_automation.py`**: The end-to-end automation script that utilizes its respective engine and `pyautogui` to perform the requested task.
+* **`llm_solution/`**: **The Core Engine.** Contains the vision-language model logic and the stable agent interface.
+* **`screenshot_service.py`**: A shared utility for window management and workspace recovery.
+* **`opencv_solution/`**: *Legacy/Optional.* Contains heuristic-based attempts (OCR, templates) that serve as a baseline for the LLM's superior performance.
 
 ---
 
-## 🚀 Key Components
+## 🤖 The Primary Solution: LLM Reasoning Engine
 
-### 1. Grounding Lab (`gui.py`)
+The LLM engine is the "brain" of this project. It is the **recommended standard** because it overcomes the mathematical and visual limitations of the legacy engine.
 
-Implement a high-performance **PyQt6** diagnostic laboratory to stress-test detection strategies and fine-tune engine parameters in real-time.
+### 1. Agent Control Center (`gui.py`)
 
-* **Magnifying Viewport**: Hover over the screenshot to inspect pixel-perfect details at 3.0x zoom using the custom magnifying loupe.
-* **Multi-Pass Tuning**: Toggle between BGR color matching, CIELAB lighting-invariant matching, ORB rotation-invariant features, and OCR engine passes.
-* **Threaded Execution**: Ensure all processing happens in a background worker (`QThread`) to keep the UI responsive.
-* **Diagnostic Logs**: Provide real-time console feedback with the ability to export system logs for debugging.
+![LLM Grounding Screenshot](screenshots/llm_ss.png)
 
-### 2. Notepad Automation (`notepad_automation.py`)
+* **Semantic Intelligence**: Correctly distinguishes between "Notepad" and "Notepad++." Traditional OCR (Tesseract) often returns false positives when similar strings are present.
+* **Resolution Agnostic**: Unlike template matching, the LLM handles non-default desktop icon sizes and DPI scaling without needing constant parameter adjustment.
 
-Execute a production-ready automation script that demonstrates the power of the Grounding Engine.
+### 2. Intelligent Notepad Automation (`notepad_automation.py`)
 
-* **Visual Launching**: Find the Notepad icon or text label on a cluttered desktop to launch the application.
-* **Data Integration**: Fetch live data from a REST API and handle the "Save As" flow across different Windows versions.
+* **AI-Located Entry**: Uses the Grounding Engine to find the "Notepad Shortcut" dynamically, ensuring the script works regardless of where the icon is placed on the desktop.
+* **Workspace Recovery**: Automatically captures the state of visible windows before execution and restores them afterward, providing a seamless "non-destructive" automation experience.
+* **Data-to-Disk Pipeline**: Fetches real-time data from external APIs and uses "bomb-proof" keyboard automation to handle save dialogs and file overwrites across various OS versions.
+
+---
+
+## 🔬 Legacy Supplement: OpenCV Grounding (Optional)
+
+The `DesktopGroundingEngine` (OpenCV) is provided strictly for **diagnostic comparison**. It utilizes a heuristic fusion approach (CIELAB, ORB, Tesseract) that is fundamentally limited:
+
+![OpenCV Grounding Screenshot](screenshots/opencv_ss.png)
+
+> [!WARNING]  
+> **Technical Failures**:
+>
+> * **Inaccurate Scoring**: The internal ranking system is not reliable; it often fails to accurately prioritize the true target over noise.
+> * **Scaling Brittleness**: Template matching (BGR/Edge) is tied to fixed pixel dimensions. It **fails consistently** when using non-default desktop icon sizes.
+> * **OCR False Positives**: Tesseract frequently misidentifies similar text elements, leading to incorrect clicks on related but wrong applications (e.g., Notepad++).
+
+---
+
+## ⚖️ Why LLM is the Standard Path
+
+| Feature | **AI-Based Grounding (Primary)** | OpenCV Grounding (Unstable) |
+| :--- | :--- | :--- |
+| **Scaling** | **Adaptive**; ignores icon size changes. | **Brittle**; fails on non-default sizes. |
+| **Scoring** | **Contextual**; logical target selection. | **Heuristic**; inaccurate ranking logic. |
+| **Stability** | **High**; stable across OS versions. | **Low**; sensitive to DPI and UI shifts. |
+| **Accuracy** | Distinguishes "Notepad" from "Notepad++". | Prone to Tesseract false positives. |
 
 ---
 
 ## 🛠 Prerequisites
 
-* **Python 3.10+** and **UV** package manager.
-* **Tesseract OCR**: Install the engine and ensure the path is correctly set in the GUI (Default: `C:\Program Files\Tesseract-OCR\tesseract.exe`).
-* **Environment Variables**: Create a `.env` file in the root directory. Look for **`example.env`** in the repository for the correct variables (e.g., `API_URL`).
-
----
-
-## 🖥 Usage
-
-### OpenCV Grounding Lab (Diagnostics)
-
-Utilize this interface to benchmark and fine-tune computer vision parameters.
-
-![OpenCV Grounding Screenshot](screenshots/opencv_ss.png)
-
-> **Diagnostic Marker Guide:**
->
-> * **Green Squares**: Successful **Fused Matches** where multiple detection strategies agree.
-> * **Cyan 'X'**: Candidates found via **Template Matching** only.
-> * **Yellow 'X'**: Candidates found via the **OCR Engine** only.
-> * **Scoring**: Numerical confidence values are displayed next to each marker to indicate the strength of the match.
-
-1. **Target Inputs**: Load a reference screenshot and define your search via a Text Query or Icon image.
-2. **Processing Passes**: Select active detection algorithms (e.g., CIELAB, ORB, OCR).
-3. **Engine Config**: Set the **Confidence Threshold** and the number of CPU threads.
-4. **Execution**: Click **START DIAGNOSTICS** to initiate the search.
-5. **Visual Debugging**: Hover over the viewport to use the **Magnifying Loupe**; verify if detection marks (bounding boxes/points) rendered on the frame align perfectly with the target.
-6. **Output**: Click **COPY BEST COORDINATES** to export the top-ranked [X, Y] location or **DUMP SYSTEM LOGS** to save the diagnostic history.
-
-### LLM Reasoning GUI (Agent Control)
-
-Leverage this interface for high-level task execution powered by large language models.
-
-![LLM Grounding Screenshot](screenshots/llm_ss.png)
-
-> **Diagnostic Marker Guide:**
->
-> * **Green '+' Sign**: Marks the precise coordinates determined by the AI's spatial reasoning.
-> * **Scoring**: Displays the probability/confidence score for each coordinate, indicating how likely it is to be the correct target.
-
-1. **Instruction**: Type a natural language command (e.g., "Notepad Stortcut").
-2. **Reasoning Pipeline**: Monitor the console to see the step-by-step logic used to map your instruction to the screen.
-3. **Target Scope**: Select the operational area, such as the "Entire Desktop."
-4. **Instruction**: Type your natural language command (e.g., "Find the Notepad icon and click it").
-5. **Visual Anchor**: Click **LOAD** to provide a reference image if the task requires specific visual grounding.
-6. **Reasoning Pipeline**: Monitor this section to see the step-by-step logic used to map instructions to coordinates.
-7. **Mapped Coordinates**: Review the generated **[X, Y]** locations and their associated probability scores.
-8. **Execution**: Click **RUN** to initiate the automated sequence.
-9. **Visual Validation**: Verify that the detected coordinate marks on the screen align with your target elements; this serves as the final debug check.
-
----
-
-## ⚖️ Pros & Cons
-
-### OpenCV Grounding Engine
-
-* **Pros**:
-  * **Speed**: Near-instant detection compared to LLM-based vision.
-  * **Precision**: Provides exact pixel coordinates ($X, Y$) and bounding boxes.
-  * **Privacy**: All processing happens locally; no desktop screenshots are sent to the cloud.
-  * **Reliability**: Deterministic results—if the template matches, it will find it every time.
-* **Cons**:
-  * **Rigidity**: Can struggle with dynamic UI changes (e.g., hover effects or dark mode shifts).
-  * **Sensitivity**: Requires high-quality reference icons for the best results.
-
-### LLM Reasoning Layer
-
-* **Pros**:
-  * **Context Aware**: Understands "semantic" commands even if the text isn't a literal match.
-  * **Flexibility**: Handles variations in UI layout and can "reason" through multi-step tasks.
-* **Cons**:
-  * **Latency**: Takes significantly longer to process and "think."
-  * **Cost**: Usually requires an external API key and consumes tokens.
-
----
-
-## ⚙️ OpenCV Grounding Engine Configuration
-
-The core detection engine uses a heuristic fusion approach to rank candidates. Customize the behavior via the `config` dictionary (accessible via the "Processing Passes" sidebar):
-
-| Parameter | Description |
-| :--- | :--- |
-| **use_ocr** | Enable Tesseract OCR for text-based element localization. |
-| **use_color** | Apply BGR color distribution filtering to matches. |
-| **use_multiscale** | Perform template matching at multiple resolutions (0.5x to 1.5x). |
-| **use_lab** | Use CIELAB color space for better accuracy under varying light. |
-| **use_gray** | Perform intensity-based grayscale template matching. Useful when color information is unreliable. |
-| **use_orb** | Utilize ORB feature descriptors for rotation and scale invariance. |
-| **use_edge** | Match elements based on structural outlines and shapes (Canny edge detection). |
-| **use_adaptive** | Use local pixel intensity to handle varying lighting for better segmentation. |
-| **use_iso** | Enable RGB Isolation to prioritize specific color channels during the search. |
-| **num_cores** | Parallelize the search across multiple CPU cores (Default: 8). |
+1. **Python 3.14** and **UV** package manager.
+2. **Environment Variables**: A `.env` file with your AI API keys is **required** to power the Reasoning Engine.
+3. **Tesseract (Optional)**: Only required if you intend to benchmark the legacy OpenCV tools.

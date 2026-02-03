@@ -234,8 +234,9 @@ class NotepadTask:
         try:
             response = requests.get(self.posts_api, timeout=10)
             response.raise_for_status()
-            posts = response.json()
-            self._validate_posts(posts)
+            raw_posts = response.json()
+
+            posts = self._validate_posts(raw_posts)
 
         except requests.RequestException as e:
             print(f"[ERROR] Network/API failure: {e}")
