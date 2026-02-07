@@ -6,11 +6,21 @@ and OCR detection strategies on desktop screenshots.
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import cv2
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtCore import QEvent, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import (
+    QColor,
+    QCursor,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+    QResizeEvent,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -130,12 +140,12 @@ class ZoomableLabel(QLabel):
         self.full_res_frame = frame.copy() if frame is not None else None
         self.update()
 
-    def mouseMoveEvent(self, event: Any) -> None:  # noqa: ANN401, N802
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """Trigger a repaint when the mouse moves to update the zoom overlay."""
         self.update()
         super().mouseMoveEvent(event)
 
-    def paintEvent(self, event: Any) -> None:  # noqa: ANN401, N802
+    def paintEvent(self, event: QPaintEvent) -> None:
         """Draw the scaled image and the magnification loupe if a frame is loaded."""
         super().paintEvent(event)
         if (
@@ -191,7 +201,7 @@ class ZoomableLabel(QLabel):
                 p.drawText(tx + 5, ty + 15, f"REL: {rx}, {ry}")
                 p.end()
 
-    def leaveEvent(self, event: Any) -> None:  # noqa: ANN401, N802
+    def leaveEvent(self, event: QEvent) -> None:
         """Clear the zoom overlay when the mouse leaves the viewport."""
         self.update()
         super().leaveEvent(event)
@@ -269,7 +279,7 @@ class GroundingLab(QMainWindow):
         self.worker: Worker | None = None
         self.init_ui()
 
-    def init_ui(self) -> None:  # noqa: PLR0915
+    def init_ui(self) -> None:
         """Construct the layout, sidebars, and viewport widgets."""
         central = QWidget()
         self.setCentralWidget(central)
@@ -647,7 +657,7 @@ class GroundingLab(QMainWindow):
             with output_path.open("w", encoding="utf-8") as f:
                 f.write(self.console.toPlainText())
 
-    def resizeEvent(self, event: Any) -> None:  # noqa: ANN401, N802
+    def resizeEvent(self, event: QResizeEvent) -> None:
         """Handle window resizing by scaling the current viewport image."""
         if self.display.full_res_frame is not None:
             self.update_view(self.display.full_res_frame)

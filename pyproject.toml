@@ -16,11 +16,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = [
-  "pre-commit>=4.5.0",
-  "pyright>=1.1.407",
-  "ruff>=0.14.9",
-]
+dev = ["pre-commit>=4.5.0", "pyright>=1.1.407", "ruff>=0.14.9"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -43,4 +39,15 @@ reportGeneralTypeIssues = "error"
 
 [tool.ruff.lint]
 select = ["ALL"]
-ignore = ['T201', 'BLE001', 'PLR2004', 'E501']
+ignore = [
+  'BLE001',
+  'C901',
+  'E501',
+  'E741',
+  'N802',
+  'PLR0913',
+  "PLR0912",
+  'PLR0915',
+  'PLR2004',
+  'T201',
+]

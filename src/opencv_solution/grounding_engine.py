@@ -17,7 +17,6 @@ import platform
 if platform.system() == "Windows":
     try:
         import ctypes
-
         ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         logger = logging.getLogger(__name__)
@@ -43,6 +42,7 @@ if TYPE_CHECKING:
 
 P = ParamSpec("P")
 
+type LogCallback = Callable[[str, str, int | None], None]
 
 @dataclass
 class Candidate:
@@ -106,7 +106,7 @@ class DesktopGroundingEngine:
         # Fallback: Return the highest absolute score regardless of method
         return max(candidates, key=lambda c: c.score)
 
-    def locate_elements(  # noqa: PLR0913
+    def locate_elements(
         self,
         screenshot_path: Path,
         icon_image: Path | None,
@@ -115,7 +115,7 @@ class DesktopGroundingEngine:
         psm: int = 11,
         scale: float = 2.0,
         config: dict[str, Any] | None = None,
-        callback: Callable[[str, str, int | None], None] | None = None,
+        callback: LogCallback | None = None,
     ) -> list[Candidate]:
         """Locate screen elements by orchestrating template matching and OCR sweeps."""
         self.perf_stats = []
@@ -181,7 +181,7 @@ class DesktopGroundingEngine:
         self,
         msg: str,
         frame: NDArray | None = None,
-        callback: Callable[[str, str, int | None], None] | None = None,
+        callback: LogCallback | None = None,
         lvl: str = "INFO",
         progress: int | None = None,
     ) -> None:
@@ -200,7 +200,7 @@ class DesktopGroundingEngine:
         self,
         path: Path,
         config: dict[str, Any],
-        callback: Callable[[str, str, int | None], None] | None = None,
+        callback: LogCallback | None = None,
     ) -> MatLike:
         img = cv2.imread(str(path))
         if img is None:
@@ -225,7 +225,7 @@ class DesktopGroundingEngine:
         icon: Path | None,
         target_size: int,
         config: dict[str, Any],
-        callback: Callable[[str, str, int | None], None] | None = None,
+        callback: LogCallback | None = None,
     ) -> list[Candidate]:
         if not icon:
             return []
@@ -283,14 +283,14 @@ class DesktopGroundingEngine:
         self._log("Template Suite Completed", callback=callback, progress=40)
         return all_hits
 
-    def _run_ocr(  # noqa: PLR0913
+    def _run_ocr(
         self,
         roi: NDArray,
         text_query: str,
         psm: int,
         scale: float,
         config: dict[str, Any],
-        callback: Callable[[str, str, int | None], None] | None = None,
+        callback: LogCallback | None = None,
     ) -> list[Candidate]:
         if not text_query or not config.get("use_ocr"):
             return []
@@ -326,7 +326,7 @@ class DesktopGroundingEngine:
         templates: list[Candidate],
         text_query: str,
         target_size: int,
-        callback: Callable[[str, str, int | None], None] | None = None,
+        callback: LogCallback | None = None,
     ) -> list[Candidate]:
         if not templates or not text_query:
             return []
@@ -354,7 +354,7 @@ class DesktopGroundingEngine:
         roi: NDArray,
         candidates: list[Candidate],
         t0: float,
-        callback: Callable[[str, str, int | None], None] | None = None,
+        callback: LogCallback | None = None,
     ) -> None:
         final_viz = self._draw_results(roi, candidates)
         self._gui_benchmark_report((time.time() - t0) * 1000, callback)
@@ -716,7 +716,7 @@ class DesktopGroundingEngine:
     def _gui_benchmark_report(
         self,
         total_time: float,
-        callback: Callable[[str, str, int | None], None] | None,
+        callback: LogCallback | None,
     ) -> None:
         """Generate and send a formatted benchmark report via the provided callback."""
         if not callback:

@@ -1,6 +1,6 @@
 # AI-Powered Vision Grounding & Notepad Automation
 
-This repository features a cutting-edge **AI LLM Reasoning Engine** designed for semantic, context-aware desktop interaction. While an OpenCV-based module is included for benchmarking, the **LLM-based architecture is the primary solution** for production.
+This repository features a cutting-edge **AI LLM Reasoning Engine** designed for semantic, context-aware interaction. While an OpenCV-based module is included for benchmarking, the **LLM-based architecture is the primary solution** for production.
 
 The LLM engine resolves the fundamental flaws of traditional computer vision, specifically the inaccurate scoring logic and the inability of template matching to handle non-default icon sizes.
 

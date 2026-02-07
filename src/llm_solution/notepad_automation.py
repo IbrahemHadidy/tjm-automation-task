@@ -58,28 +58,59 @@ class NotepadTask:
                 w.activate()
 
     def _get_ai_grounding(self, instruction: str) -> tuple[int, int] | None:
-        """Resolve pixel coordinates for a UI element by querying the engine."""
+        """Resolve pixel coordinates for a UI element using the AI grounding engine.
+
+        Returns the highest-ranked match that passes a score threshold.
+        Logs detailed info for debugging.
+        """
+
+        def engine_logger(msg: str) -> None:
+            # Print engine reasoning messages with levels
+            level = "INFO"
+            if "[SUCCESS]" in msg:
+                level = "SUCCESS"
+            elif "[ERROR]" in msg:
+                level = "ERROR"
+            clean_msg = (
+                msg.replace("[INFO]", "")
+                .replace("[SUCCESS]", "")
+                .replace("[ERROR]", "")
+                .strip()
+            )
+            print(f"[ENGINE][{level}] {clean_msg}")
+
         results = self.engine.resolve_coordinates(
             instruction=instruction,
             target_window="Entire Desktop",
+            reference_image_path=None,  # Add path here if using visual anchor
             scale_to_pixels=True,
+            verify_after_action=False,  # Set True to have AI double-check
+            logger_callback=engine_logger,
         )
 
         if not results:
+            print(f"[ERROR] No matches returned by AI for '{instruction}'.")
             return None
 
-        # Sort results by score (descending) to get the best match first
-        results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        # Sort by score (descending) and then by rank
+        results.sort(key=lambda x: (-x.get("score", 0.0), x.get("rank", 1)))
 
-        # Check if the best match meets our quality threshold
-        if results[0].get("score", 0.0) < 0.5:
+        for i, node in enumerate(results):
+            coords = node.get("coords", [0, 0])
+            score = node.get("score", 0.0)
+            area = node.get("area", "Unknown area")
+            neighbors = node.get("neighbors", [])
+            rank = node.get("rank", i + 1)
+
             print(
-                f"[WARN] Best match score ({results[0]['score']}) is below threshold.",
+                f"[DEBUG] Node {i + 1}: {area} | Neighbors: {neighbors} | Score: {score:.2f} | Rank: {rank}",
             )
-            return None
 
-        coords = results[0]["coords"]
-        return (coords[0], coords[1])
+            if score >= 0.5:
+                return (coords[0], coords[1])
+
+        print(f"[WARN] No nodes met the score threshold for '{instruction}'.")
+        return None
 
     def _get_active_notepad(self) -> gw.Win32Window | None:
         """Retrieve the currently active and visible Notepad window."""
