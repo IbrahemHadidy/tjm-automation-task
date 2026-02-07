@@ -17,6 +17,7 @@ import platform
 if platform.system() == "Windows":
     try:
         import ctypes
+
         ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 P = ParamSpec("P")
 
 type LogCallback = Callable[[str, str, int | None], None]
+
 
 @dataclass
 class Candidate:
@@ -122,11 +124,7 @@ class DesktopGroundingEngine:
         safe_config: dict[str, Any] = config or {}
         t0 = time.time()
 
-        img = self._load_and_preprocess_screenshot(
-            screenshot_path,
-            safe_config,
-            callback,
-        )
+        img = self._load_and_preprocess_screenshot(screenshot_path)
         desktop_roi = self._crop_desktop_roi(img)
         self._log("INIT: Screenshot Loaded", desktop_roi, callback, progress=5)
 
@@ -163,6 +161,7 @@ class DesktopGroundingEngine:
                 templates,
                 text_query,
                 target_size,
+                safe_config,
                 callback,
             ),
         )
@@ -199,20 +198,11 @@ class DesktopGroundingEngine:
     def _load_and_preprocess_screenshot(
         self,
         path: Path,
-        config: dict[str, Any],
-        callback: LogCallback | None = None,
     ) -> MatLike:
         img = cv2.imread(str(path))
         if img is None:
             msg = f"Failed to load screenshot at {path}"
             raise FileNotFoundError(msg)
-        if config.get("use_adaptive"):
-            self._log(
-                "PRE-PROCESS: Applying Adaptive Contrast Enhancement",
-                callback=callback,
-                progress=7,
-            )
-            img = self._enhance_contrast_adaptive(img)
         return img
 
     def _crop_desktop_roi(self, img: NDArray) -> NDArray:
@@ -326,6 +316,7 @@ class DesktopGroundingEngine:
         templates: list[Candidate],
         text_query: str,
         target_size: int,
+        config: dict[str, Any],
         callback: LogCallback | None = None,
     ) -> list[Candidate]:
         if not templates or not text_query:
@@ -342,6 +333,7 @@ class DesktopGroundingEngine:
             queue,
             text_query,
             target_size,
+            config,
             lambda *a, **kw: self._log(*a, callback=callback, **kw),
         )
         self.perf_stats.append(
@@ -381,6 +373,7 @@ class DesktopGroundingEngine:
         templates: list[Candidate],
         query: str,
         target_size: int,
+        config: dict[str, Any],
         cb: Callable[..., Any],
     ) -> list[Candidate]:
         """Recover missing text labels by performing local OCR around template match hits."""
@@ -409,6 +402,9 @@ class DesktopGroundingEngine:
                 interpolation=cv2.INTER_LINEAR,
             )
             _, thresh = cv2.threshold(up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            if config.get("use_adaptive", False):
+                thresh = self._enhance_contrast_adaptive(thresh)
 
             cb(f"RECOVERY: Scanning Label ROI {idx + 1}", thresh, progress=82 + idx)
 
@@ -444,17 +440,21 @@ class DesktopGroundingEngine:
         """Perform a multi-pass deep OCR search using various preprocessing modes."""
         qc, raw_results = q.strip().lower(), []
         modes = [1, 2, 5, 8, 11, 12]
-        # New Feature: Support for dynamic language settings
         lang = _config.get("ocr_lang", "eng")
 
         for i, p_num in enumerate(modes):
             if self.should_abort():
                 break
             progress_val = 40 + (i * 6)
-            proc = self._apply_deep_ocr_preprocessing(r, p_num)
-            cb(f"PROCESS: OCR Pass {p_num}", proc, progress=progress_val)
 
-            current_psm = 7 if p_num == 12 else psm
+            proc = self._apply_deep_ocr_preprocessing(r, p_num)
+
+            if _config.get("use_adaptive", False):
+                proc = self._enhance_contrast_adaptive(proc)
+
+                cb(f"PROCESS: OCR Pass {p_num}", proc, progress=progress_val)
+
+                current_psm = 7 if p_num == 12 else psm
             tess_config = f"--oem 3 --psm {current_psm} -c preserve_interword_spaces=1"
             data: dict[str, list[Any]] = pytesseract.image_to_data(
                 proc,
@@ -847,9 +847,14 @@ class DesktopGroundingEngine:
 
     def _enhance_contrast_adaptive(self, img: MatLike) -> MatLike:
         """Apply adaptive histogram equalization to improve text visibility."""
-        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-        channels = list(cv2.split(lab))
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        channels[0] = clahe.apply(channels[0])
-        limg = cv2.merge(channels)
-        return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+        if len(img.shape) == 2:
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            return clahe.apply(img)
+        if len(img.shape) == 3 and img.shape[2] == 3:
+            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+            channels = list(cv2.split(lab))
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            channels[0] = clahe.apply(channels[0])
+            limg = cv2.merge(channels)
+            return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+        return img
