@@ -359,9 +359,22 @@ class GroundingLab(QMainWindow):
         self.num_cores = QSpinBox()
         self.num_cores.setRange(1, 32)
         self.num_cores.setValue(8)
+        self.min_icon_width = QSpinBox()
+        self.min_icon_width.setRange(10, 500)
+        self.min_icon_width.setValue(30)
+        self.max_icon_width = QSpinBox()
+        self.max_icon_width.setRange(50, 1000)
+        self.max_icon_width.setValue(150)
+        icon_size_layout = QHBoxLayout()
+        icon_size_layout.addWidget(QLabel("Min Width"))
+        icon_size_layout.addWidget(self.min_icon_width)
+        icon_size_layout.addWidget(QLabel("Max Width"))
+        icon_size_layout.addWidget(self.max_icon_width)
+
         sys_f.addRow("TESS PATH", self.tess_path)
         sys_f.addRow("CONFIDENCE", self.threshold)
         sys_f.addRow("THREADS", self.num_cores)
+        sys_f.addRow("ICON SIZE", icon_size_layout)
         sidebar.addWidget(sys_group)
 
         # --- 4. PROGRESS & ACTIONS ---
