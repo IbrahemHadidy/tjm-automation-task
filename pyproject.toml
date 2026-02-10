@@ -26,10 +26,10 @@ packages = ['opencv_solution', 'llm_solution']
 package = true
 
 [project.scripts]
-start-opencv = "opencv_solution.gui:run"
-notepad-opencv = "opencv_solution.notepad_automation:run"
 start-llm = "llm_solution.gui:run"
-notepad-llm = "llm_solution.notepad_automation:run"
+start-opencv = "opencv_solution.gui:run"
+notepad-llm = "notepad_automation:run_llm"
+notepad-opencv = "notepad_automation:run_opencv"
 
 [tool.pyright]
 typeCheckingMode = "basic"
