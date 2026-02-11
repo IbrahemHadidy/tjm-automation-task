@@ -1,6 +1,5 @@
 """Provide a diagnostic laboratory interface for AI grounding and vision tasks."""
 
-import ctypes
 import os
 import sys
 from pathlib import Path
@@ -38,12 +37,6 @@ from PyQt6.QtWidgets import (
 )
 
 from llm_solution.grounding_engine import AiGroundingEngine, UIElementNode
-
-# High-DPI Scaling Configuration
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    ctypes.windll.user32.SetProcessDPIAware()
 
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
 os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "PassThrough"

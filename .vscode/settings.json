@@ -1,0 +1,20 @@
+{
+    "python.languageServer": "None",
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.codeActionsOnSave": {
+            "source.organizeImports.ruff": "explicit",
+            "source.fixAll.ruff": "explicit"
+        },
+        "editor.rulers": [
+            88
+        ],
+        "editor.fontLigatures": true
+    },
+    "editor.formatOnSave": true,
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "files.associations": {
+        ".env.jenkins": "dotenv"
+    }
+}

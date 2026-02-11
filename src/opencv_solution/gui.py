@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
@@ -284,7 +285,12 @@ class GroundingLab(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
-        sidebar = QVBoxLayout()
+        sidebar_widget = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar_widget)
+        sidebar_layout.setContentsMargins(8, 8, 8, 8)
+        sidebar_layout.setSpacing(10)
+        sidebar_widget.setMinimumWidth(360)
+        sidebar_widget.setMaximumWidth(420)
 
         # --- 1. INPUT GROUP ---
         input_group = QGroupBox("Target Inputs")
@@ -296,7 +302,7 @@ class GroundingLab(QMainWindow):
         input_f.addRow("QUERY", self.query_input)
         input_f.addRow(self.btn_ss)
         input_f.addRow(self.btn_icon)
-        sidebar.addWidget(input_group)
+        sidebar_layout.addWidget(input_group)
 
         # --- 2a. TEMPLATE MATCHING PASSES ---
         template_group = QGroupBox("Template Matching Passes")
@@ -318,7 +324,7 @@ class GroundingLab(QMainWindow):
         ]:
             chk.setChecked(True)
             template_v.addWidget(chk)
-        sidebar.addWidget(template_group)
+        sidebar_layout.addWidget(template_group)
 
         # --- 2b. OCR PASSES ---
         ocr_group = QGroupBox("OCR Passes")
@@ -340,7 +346,7 @@ class GroundingLab(QMainWindow):
         ]:
             chk.setChecked(True)
             ocr_v.addWidget(chk)
-        sidebar.addWidget(ocr_group)
+        sidebar_layout.addWidget(ocr_group)
 
         # --- CONNECT INPUT EVENTS ---
         self.btn_ss.clicked.connect(lambda: self.get_file("ss"))
@@ -375,7 +381,7 @@ class GroundingLab(QMainWindow):
         sys_f.addRow("CONFIDENCE", self.threshold)
         sys_f.addRow("THREADS", self.num_cores)
         sys_f.addRow("ICON SIZE", icon_size_layout)
-        sidebar.addWidget(sys_group)
+        sidebar_layout.addWidget(sys_group)
 
         # --- 4. PROGRESS & ACTIONS ---
         action_group = QGroupBox("Engine Control")
@@ -391,17 +397,24 @@ class GroundingLab(QMainWindow):
         action_v.addWidget(self.progress_bar)
         action_v.addWidget(self.btn_run)
         action_v.addWidget(self.btn_cancel)
-        sidebar.addWidget(action_group)
+        sidebar_layout.addWidget(action_group)
 
         self.btn_copy = QPushButton("COPY BEST COORDINATES")
         self.btn_dump = QPushButton("DUMP SYSTEM LOGS")
         self.btn_reset = QPushButton("RESET STATE")
-        sidebar.addWidget(self.btn_reset)
+        sidebar_layout.addWidget(self.btn_reset)
         self.btn_reset.clicked.connect(self.reset_state)
-        sidebar.addWidget(self.btn_copy)
-        sidebar.addWidget(self.btn_dump)
-        sidebar.addStretch()
-        main_layout.addLayout(sidebar, 1)
+        sidebar_layout.addWidget(self.btn_copy)
+        sidebar_layout.addWidget(self.btn_dump)
+        sidebar_layout.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(sidebar_widget)
+
+        main_layout.addWidget(scroll)
+        main_layout.setStretch(0, 1)
 
         # --- VIEWPORT ---
         viewport = QVBoxLayout()
@@ -414,7 +427,8 @@ class GroundingLab(QMainWindow):
         self.console.setReadOnly(True)
         viewport.addWidget(self.display, 8)
         viewport.addWidget(self.console, 2)
-        main_layout.addLayout(viewport, 4)
+        main_layout.addLayout(viewport)
+        main_layout.setStretch(1, 4)
 
         # --- CONNECT ACTION BUTTONS ---
         self.btn_run.clicked.connect(self.run_engine)
@@ -435,17 +449,15 @@ class GroundingLab(QMainWindow):
 
         styled_message = f"""
         <div style='margin-bottom: 8px;'>
-            <span style='color:{color}; font-weight:bold;'>[{lvl}]</span><br>
+            <span style='color:{color}; font-weight:bold;'>[{lvl}]</span>
             <pre
                 style='
                     font-family: "Consolas", "Monaco", monospace;
                     margin: 0;
                     white-space: pre;
                 '
-            >
-                {m}
-            </pre>
-        </div>
+            >{m}</pre>
+        </div><br>
         """
         self.console.append(styled_message)
         vbar = self.console.verticalScrollBar()

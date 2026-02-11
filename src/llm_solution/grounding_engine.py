@@ -2,6 +2,17 @@
 
 from __future__ import annotations
 
+import ctypes
+
+# High-DPI Scaling Configuration
+try:
+    ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+except Exception:
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        ctypes.windll.user32.SetProcessDPIAware()
+
 import json
 import os
 import re
@@ -368,14 +379,8 @@ class AiGroundingEngine:
         """Delete temporary image artifacts from the workspace."""
         temp_files = [
             "capture_state.png",
-            "ai_vision_input.png",
             "raw_capture.png",
-            "verify_state.png",
+            "ai_vision_input.png",
         ]
-        for file in temp_files:
-            path = Path(file)
-            if path.exists():
-                try:
-                    path.unlink()
-                except Exception as e:
-                    self.log(f"[ERROR] Could not delete {file}: {e}")
+        for f in temp_files:
+            Path(f).unlink(missing_ok=True)

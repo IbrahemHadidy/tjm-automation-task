@@ -1,0 +1,8 @@
+{
+    "recommendations": [
+        "charliermarsh.ruff",
+        "mikestead.dotenv",
+        "charliermarsh.ruff",
+        "anysphere.cursorpyright"
+    ]
+}

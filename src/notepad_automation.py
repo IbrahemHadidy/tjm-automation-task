@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 
 load_dotenv()
 
-TEXT_QUERY = "Notepad Shortcut"
+LLM_INSTRUCTION = "Notepad shortcut"
+OPENCV_TEXT_QUERY = "Notepad"
 PROJECT_DIR = Path.home() / "Desktop" / "tjm-project"
 PROJECT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Optional OpenCV configs
 ICON_PATH = Path("notepad_icon.png")
 TESS_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -72,21 +72,58 @@ class NotepadTask:
                 w.activate()
 
     def _get_active_notepad(self) -> gw.Win32Window | None:
-        valid = [
+        wins = [
             w
             for w in gw.getWindowsWithTitle("Notepad")
             if w.visible and not w.isMinimized
         ]
-        return valid[0] if valid else None
+        return wins[0] if wins else None
 
+    # -------------------
+    # Shared helpers (DRY)
+    # -------------------
+    def _reset_desktop(self) -> None:
+        pyautogui.hotkey("win", "m")
+        time.sleep(1.5)
+        pyautogui.click(1, 1)
+
+    def _verify_and_launch(
+        self,
+        *,
+        x: int,
+        y: int,
+        score: float,
+        source: str,
+        min_score: float = 0.5,
+    ) -> bool:
+        if score < min_score:
+            return False
+
+        print(
+            f"[INFO] Attempting launch with {source} candidate at ({x}, {y}) (Score: {score})",
+        )
+        pyautogui.doubleClick(x, y)
+
+        for _ in range(6):
+            if self._get_active_notepad():
+                print(f"[SUCCESS] Notepad launched via {source} candidate.")
+                return True
+            time.sleep(0.5)
+
+        print(f"[WARN] {source} candidate at ({x}, {y}) failed.")
+        return False
+
+    # -------------------
+    # API helpers
+    # -------------------
     def _fetch_posts(self) -> list[Post]:
         """Fetch post data from the API with 3 retries and exponential backoff."""
         for attempt in range(3):
             try:
                 print(f"[INFO] Fetching posts (Attempt {attempt + 1}/3)...")
-                response = requests.get(self.posts_api, timeout=10)
-                response.raise_for_status()
-                return self._validate_posts(response.json())
+                resp = requests.get(self.posts_api, timeout=10)
+                resp.raise_for_status()
+                return self._validate_posts(resp.json())
             except (requests.RequestException, TypeError) as e:
                 if attempt == 2:
                     print(f"[ERROR] API failed after 3 attempts: {e}")
@@ -106,7 +143,6 @@ class NotepadTask:
     def automation_loop(self, launch_func: Callable[[], bool]) -> None:
         """Run a generic automation loop for the first 10 posts using the provided launch function."""
         self._capture_workspace_state()
-
         try:
             posts = self._fetch_posts()
             if not posts:
@@ -119,17 +155,9 @@ class NotepadTask:
                 else:
                     print("[FATAL] Skipping post due to grounding failure.")
                 time.sleep(1.0)
+
         finally:
             self._restore_workspace_state()
-            temp_files = [
-                "raw_capture.png",
-                "grounding_temp.png",
-                "ai_vision_input.png",
-                "capture_state.png",
-            ]
-            for f in temp_files:
-                Path(f).unlink(missing_ok=True)
-
             print("\n[INFO] All steps completed.")
 
     # -------------------
@@ -153,7 +181,6 @@ class NotepadTask:
         pyperclip.copy(content)
         pyautogui.hotkey("ctrl", "a")
         pyautogui.hotkey("ctrl", "v")
-        time.sleep(0.3)
 
         pyautogui.hotkey("ctrl", "s")  # Trigger Save
 
@@ -166,42 +193,34 @@ class NotepadTask:
                 break
             time.sleep(0.5)
 
-        if save_dialog:
-            file_path = str(PROJECT_DIR / f"post_{post['id']}.txt")
-            pyautogui.hotkey("alt", "n")
-            time.sleep(0.2)
-            pyautogui.hotkey("ctrl", "a")
-            pyautogui.press("backspace")
-            pyperclip.copy(file_path)
-            pyautogui.hotkey("ctrl", "v")
-            time.sleep(0.3)
-            pyautogui.press("enter")
-
-            time.sleep(0.7)
-            confirm = [
-                w for w in gw.getWindowsWithTitle("Confirm Save As") if w.visible
-            ]
-            if confirm:
-                pyautogui.press("y")
-                time.sleep(0.3)
-
-            pyautogui.hotkey("ctrl", "w")
-            time.sleep(0.3)
-            with contextlib.suppress(Exception):
-                if win.visible:
-                    win.close()
-            print(f"[COMPLETE] Processed post {post['id']} and cleaned up.")
-        else:
+        if not save_dialog:
             print(f"[WARNING] Save dialog failed for post {post['id']}.")
+            return
+
+        file_path = str(PROJECT_DIR / f"post_{post['id']}.txt")
+        pyautogui.hotkey("alt", "n")
+        pyautogui.hotkey("ctrl", "a")
+        pyautogui.press("backspace")
+        pyperclip.copy(file_path)
+        pyautogui.hotkey("ctrl", "v")
+        pyautogui.press("enter")
+
+        time.sleep(0.7)
+        if any(w.visible for w in gw.getWindowsWithTitle("Confirm Save As")):
+            pyautogui.press("y")
+
+        pyautogui.hotkey("ctrl", "w")
+        with contextlib.suppress(Exception):
+            win.close()
+
+        print(f"[COMPLETE] Processed post {post['id']} and cleaned up.")
 
     # -------------------
-    # LLM & OpenCV launchers
+    # Launchers
     # -------------------
     def launch_llm(self) -> bool:
         """Use AI grounding engine to locate Notepad icon and double-click it."""
-        pyautogui.hotkey("win", "m")
-        time.sleep(1.5)
-        pyautogui.click(1, 1)
+        self._reset_desktop()
 
         def engine_logger(msg: str) -> None:
             level = "INFO"
@@ -209,110 +228,95 @@ class NotepadTask:
                 level = "SUCCESS"
             elif "[ERROR]" in msg:
                 level = "ERROR"
-            clean_msg = (
+            clean = (
                 msg.replace("[INFO]", "")
                 .replace("[SUCCESS]", "")
-                .replace("[ERROR]", "")
-                .strip()
+                .replace(
+                    "[ERROR]",
+                    "",
+                )
             )
-            print(f"[ENGINE][{level}] {clean_msg}")
+            print(f"[ENGINE][{level}] {clean.strip()}")
 
-        results = self.llm_engine.resolve_coordinates(
-            instruction=f"The {TEXT_QUERY} desktop icon",
-            target_window="Entire Desktop",
-            reference_image_path=None,
-            scale_to_pixels=True,
-            verify_after_action=False,
-            logger_callback=engine_logger,
-        )
+        try:
+            results = self.llm_engine.resolve_coordinates(
+                instruction=LLM_INSTRUCTION,
+                target_window="Entire Desktop",
+                scale_to_pixels=True,
+                verify_after_action=False,
+                logger_callback=engine_logger,
+            )
 
-        if not results:
-            print(f"[ERROR] No matches returned by AI for '{TEXT_QUERY}'.")
+            if not results:
+                print("[ERROR] No AI matches returned.")
+                return False
+
+            results.sort(key=lambda n: (-n.get("score", 0.0), n.get("rank", 1)))
+
+            for node in results:
+                x, y = node.get("coords", [0, 0])
+                if self._verify_and_launch(
+                    x=x,
+                    y=y,
+                    score=node.get("score", 0.0),
+                    source="AI",
+                ):
+                    return True
+
+            print(f"[ERROR] All {len(results)} AI candidates failed.")
             return False
 
-        # Sort results by best score first
-        results.sort(key=lambda x: (-x.get("score", 0.0), x.get("rank", 1)))
-
-        for node in results:
-            coords = node.get("coords", [0, 0])
-            score = node.get("score", 0.0)
-
-            if score >= 0.5:
-                print(
-                    f"[INFO] Attempting launch with AI candidate at {coords} (Score: {score})",
-                )
-                pyautogui.doubleClick(coords[0], coords[1])
-
-                # Verification loop for THIS specific candidate
-                for _ in range(6):
-                    if self._get_active_notepad():
-                        print("[SUCCESS] Notepad launched via AI candidate.")
-                        return True
-                    time.sleep(0.5)
-
-                print(
-                    f"[WARN] Candidate at {coords} failed to launch Notepad. Trying next...",
-                )
-
-        print(f"[ERROR] All {len(results)} AI candidates failed.")
-        return False
+        finally:
+            self.llm_engine.cleanup()
 
     def launch_opencv(self) -> bool:
         """Use OpenCV grounding engine to locate Notepad icon and double-click it."""
-        pyautogui.hotkey("win", "m")
-        time.sleep(1.5)
-        pyautogui.click(1, 1)
+        self._reset_desktop()
+
         temp_ss = Path("grounding_temp.png")
         pyautogui.screenshot(str(temp_ss))
 
-        engine_config = {
-            "use_ocr": True,
-            "use_color": True,
-            "use_multiscale": True,
-            "num_cores": 8,
-        }
-        raw_candidates = self.cv_engine.locate_elements(
-            screenshot_path=temp_ss,
-            icon_image=ICON_PATH,
-            text_query=TEXT_QUERY,
-            threshold=0.5,
-            config=engine_config,
-        )
+        try:
+            raw = self.cv_engine.locate_elements(
+                screenshot_path=temp_ss,
+                icon_image=ICON_PATH,
+                text_query=OPENCV_TEXT_QUERY,
+                threshold=0.5,
+                config={
+                    "use_ocr": True,
+                    "use_color": True,
+                    "use_multiscale": True,
+                    "num_cores": 8,
+                },
+            )
 
-        raw_candidates.sort(key=lambda x: x.score, reverse=True)
+            raw.sort(key=lambda c: c.score, reverse=True)
 
-        screen_w, screen_h = pyautogui.size()
-        img = cv2.imread(str(temp_ss))
-        if img is None:
-            print("[ERROR] Could not read screenshot file.")
+            screen_w, screen_h = pyautogui.size()
+            img = cv2.imread(str(temp_ss))
+            if img is None:
+                print("[ERROR] Could not read screenshot.")
+                return False
+
+            img_h, img_w = img.shape[:2]
+            sx, sy = screen_w / img_w, screen_h / img_h
+
+            for cand in raw:
+                x = int(cand.x * sx)
+                y = int(cand.y * sy)
+                if self._verify_and_launch(
+                    x=x,
+                    y=y,
+                    score=cand.score,
+                    source="OpenCV",
+                ):
+                    return True
+
+            print(f"[ERROR] All {len(raw)} OpenCV candidates failed.")
             return False
 
-        img_h, img_w = img.shape[:2]
-        scale_x, scale_y = screen_w / img_w, screen_h / img_h
-
-        for cand in raw_candidates:
-            screen_x = int(cand.x * scale_x)
-            screen_y = int(cand.y * scale_y)
-
-            if 0 <= screen_x < screen_w and 0 <= screen_y < screen_h:
-                print(
-                    f"[INFO] Attempting launch with CV candidate at ({screen_x}, {screen_y}) (Score: {cand.score})",
-                )
-                pyautogui.doubleClick(screen_x, screen_y)
-
-                # Verification loop for THIS specific candidate
-                for _ in range(6):
-                    if self._get_active_notepad():
-                        print("[SUCCESS] Notepad launched via OpenCV candidate.")
-                        return True
-                    time.sleep(0.5)
-
-                print(
-                    f"[WARN] CV candidate at ({screen_x}, {screen_y}) failed. Trying next...",
-                )
-
-        print(f"[ERROR] All {len(raw_candidates)} OpenCV candidates failed.")
-        return False
+        finally:
+            temp_ss.unlink(missing_ok=True)
 
 
 # -------------------

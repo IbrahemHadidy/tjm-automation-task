@@ -16,18 +16,16 @@ Summary / Quickstart
 Design intent comments appear inline near heuristics, thresholds, and coordinate math.
 """
 
-import logging
-import platform
+import ctypes
 
-if platform.system() == "Windows":
+# High-DPI Scaling Configuration
+try:
+    ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+except Exception:
     try:
-        import ctypes
-
-        # Ensure the process is DPI aware so screenshots and coordinates align on Windows.
-        ctypes.windll.user32.SetProcessDPIAware()
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
-        logger = logging.getLogger(__name__)
-        logger.exception("DPI awareness failed")
+        ctypes.windll.user32.SetProcessDPIAware()
 
 import concurrent.futures
 import time
