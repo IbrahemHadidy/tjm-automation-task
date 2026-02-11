@@ -459,4 +459,10 @@ While this implementation focuses on Notepad, the architecture is designed for h
 * **Visual debugging with GUIs:**
   * **OpenCV GUI:** Inspect detection passes, confidence scores, threads, Tesseract path, and icon size limits.
   * **LLM GUI:** Optionally verify AI-predicted coordinates before automation.
-* Adjust template/OCR thresholds if detection fails.
+* Threshold and geometry tuning:
+  * All core detection thresholds are centralized in [`constants.py`](src/opencv_solution/constants.py).
+  * If detection fails or produces duplicates:
+    * Lower template thresholds slightly (e.g., 0.7 → 0.65).
+    * Increase/decrease NMS radius factors.
+    * Adjust OCR confidence filtering.
+    * Modify fusion bonus if semantic matching is underweighted.

@@ -1,19 +1,31 @@
 """DesktopGroundingEngine.
 
-Provides computer vision and OCR capabilities for locating desktop UI elements.
+Provides computer vision and OCR-based desktop UI element grounding using
+a multi-pass probabilistic detection pipeline.
 
-Summary / Quickstart
---------------------
-- Call DesktopGroundingEngine.locate_elements(screenshot_path, icon_image, text_query, ...)
-  to run template-matching and OCR passes and get a ranked list of Candidate objects.
-- Candidate: (x, y, score, method, img_score, txt_score, bbox, geometry_score)
-- Engine uses multiple independent strategies in parallel:
-    * Template matching (color, CIELAB, grayscale, edge)
-    * ORB feature matching (keypoint clustering)
-    * Multi-pass OCR (Tesseract) with local recovery around template hits
-- Configuration flags (pass booleans, cores, multiscale, OCR language/options) influence which passes run.
+Design Philosophy
+-----------------
+This engine does not rely on a single detection method. Instead, it combines
+multiple weak signals to improve robustness in real-world desktop environments.
 
-Design intent comments appear inline near heuristics, thresholds, and coordinate math.
+Detection strategies include:
+- Template matching (color, grayscale, edge, LAB space)
+- Feature matching using ORB keypoints
+- Multi-pass OCR text recognition using Tesseract
+- Local recovery OCR around high-confidence visual matches
+
+Results from these detectors are fused using spatial proximity heuristics
+and confidence scoring.
+
+Coordinate System
+-----------------
+All detections are represented using **center coordinates** to simplify
+spatial fusion and duplicate removal.
+
+Heuristic Nature
+----------------
+Many thresholds and constants are empirically tuned for typical Windows
+desktop environments and should be adjusted for different screen layouts.
 """
 
 import ctypes
@@ -37,12 +49,38 @@ import cv2
 import numpy as np
 import pytesseract
 
+from opencv_solution.constants import (
+    CANNY_HIGH_THRESHOLD,
+    CANNY_LOW_THRESHOLD,
+    DEFAULT_ICON_SIZE,
+    FINAL_DEDUP_RADIUS_FACTOR,
+    FUSION_DISTANCE_FACTOR,
+    ICON_MAX_WIDTH,
+    ICON_MIN_WIDTH,
+    MAX_TEMPLATE_HITS,
+    MULTISCALE_FACTORS,
+    NMS_RADIUS_FACTOR,
+    OCR_MIN_CONFIDENCE,
+    OCR_MIN_TOKEN_LENGTH,
+    OCR_RECOVERY_THRESHOLD,
+    ORB_MIN_MATCHES,
+    ORB_SAMPLE_POINTS,
+    RECOVERY_HORIZONTAL_PAD_FACTOR,
+    RECOVERY_QUEUE_LIMIT,
+    RECOVERY_VERTICAL_EXTEND_FACTOR,
+    TASKBAR_HEIGHT_PX,
+    TOKEN_DEDUP_RADIUS_PX,
+    TPL_COLOR_THRESHOLD,
+    TPL_EDGE_THRESHOLD,
+    TPL_GRAY_THRESHOLD,
+    TPL_LAB_THRESHOLD,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
     from cv2.typing import MatLike
-    from numpy.typing import NDArray
 
 
 P = ParamSpec("P")
@@ -94,7 +132,7 @@ class DesktopGroundingEngine:
         pytesseract.pytesseract.tesseract_cmd = self.tesseract_path
 
         # Latest debug frame (for UI display) is stored here when logging frames.
-        self.debug_frame: NDArray | None = None
+        self.debug_frame: MatLike | None = None
 
         # Perf stats collected from timed wrappers for each pass.
         self.perf_stats: list[PerfStat] = []
@@ -108,12 +146,26 @@ class DesktopGroundingEngine:
         candidates: list[Candidate],
         priority: str = "fusion",
     ) -> Candidate | None:
-        """Select the highest-ranking candidate based on the specified priority strategy.
+        """Select the highest-confidence candidate using a priority strategy.
 
-        Strategies:
-          - 'fusion': prefer fused template+OCR matches (strong visual + text agreement)
-          - 'text': prefer OCR-derived matches
-          - fallback: highest raw score across methods
+        Priority Strategies
+        -------------------
+        fusion:
+        Prefer candidates produced by both visual and OCR detection.
+        This typically represents the strongest semantic + visual agreement.
+
+        text:
+        Prefer OCR-derived detections, useful when text labels are more reliable
+        than icon appearance.
+
+        default fallback:
+        Select the candidate with the highest raw confidence score.
+
+        Returns
+        -------
+        Candidate | None
+        Best matching detection or None if no candidates exist.
+
         """
         if not candidates:
             return None
@@ -140,26 +192,58 @@ class DesktopGroundingEngine:
         text_query: str,
         threshold: float = 0.5,
         psm: int = 11,
-        scale: float = 2.0,
         config: dict[str, Any] | None = None,
         callback: LogCallback | None = None,
     ) -> list[Candidate]:
-        """Locate screen elements by orchestrating template matching and OCR sweeps.
+        """Locate UI elements on screen by executing a multi-stage vision pipeline.
 
-        High-level flow:
-          1. Load screenshot, crop UI chrome (taskbar) region
-          2. Detect approximate desktop icon size
-          3. Run chosen template passes in parallel
-          4. Run global OCR sweep
-          5. Validate templates, run targeted OCR recovery around template hits
-          6. Fuse template + OCR hits, apply filtering & NMS, and return final candidates
+        Pipeline Flow
+        -------------
+        1. Load screenshot and remove UI chrome regions (e.g., taskbar)
+        2. Estimate desktop icon size for adaptive template scaling
+        3. Execute multiple template matching passes in parallel:
+        - Color matching
+        - CIELAB color space matching
+        - Edge map matching
+        - Grayscale matching
+        - ORB feature matching
+        4. Run global OCR sweeps for semantic text recognition
+        5. Perform targeted OCR recovery around template detections
+        6. Fuse visual and text detections using spatial heuristics
+        7. Apply non-maximum suppression and score filtering
+
+        Parameters
+        ----------
+        screenshot_path : Path
+        Path to screenshot image file.
+
+        icon_image : Path | None
+        Reference template icon to search for.
+
+        text_query : str
+        Text label expected to appear near target UI element.
+
+        threshold : float
+        Minimum confidence score required to keep a detection.
+
+        psm : int
+        Tesseract Page Segmentation Mode controlling text layout assumptions.
+
+        config : dict | None
+        Optional configuration flags controlling detection passes.
+
+        Returns
+        -------
+        list[Candidate]
+        Ranked list of detected UI element candidates.
+
         """
         self.perf_stats = []
         safe_config: dict[str, Any] = config or {}
         t0 = time.time()
 
-        img = self._load_and_preprocess_screenshot(screenshot_path)
         full_img = self._load_and_preprocess_screenshot(screenshot_path)
+        img = full_img.copy()
         desktop_roi = self._crop_desktop_roi(img)
         self._log("INIT: Screenshot Loaded", desktop_roi, callback, progress=5)
 
@@ -169,7 +253,6 @@ class DesktopGroundingEngine:
         # Heuristic: detect icon size to scale template appropriately.
         target_size = self._detect_desktop_icon_size(
             desktop_roi,
-            lambda *a, **kw: self._log(*a, callback=callback, **kw),
         )
 
         template_hits = self._run_template_passes(
@@ -184,7 +267,6 @@ class DesktopGroundingEngine:
             desktop_roi,
             text_query,
             psm,
-            scale,
             safe_config,
             callback,
         )
@@ -214,7 +296,6 @@ class DesktopGroundingEngine:
             ocr_hits,
             target_size,
             threshold,
-            safe_config,
         )
 
         self._report_results(full_img, final_candidates, t0, callback)
@@ -223,7 +304,7 @@ class DesktopGroundingEngine:
     def _log(
         self,
         msg: str,
-        frame: NDArray | None = None,
+        frame: MatLike | None = None,
         callback: LogCallback | None = None,
         lvl: str = "INFO",
         progress: int | None = None,
@@ -254,17 +335,17 @@ class DesktopGroundingEngine:
             raise FileNotFoundError(msg)
         return img
 
-    def _crop_desktop_roi(self, img: NDArray) -> NDArray:
+    def _crop_desktop_roi(self, img: MatLike) -> MatLike:
         """Crop the bottom UI chrome (e.g., Windows taskbar) from the screenshot.
 
         The `60` px value is a heuristic — adjust if your environment has a different taskbar height.
         """
         h, w = img.shape[:2]
-        return img[0 : h - 60, 0:w]
+        return img[0 : h - TASKBAR_HEIGHT_PX, 0:w]
 
     def _run_template_passes(
         self,
-        roi: NDArray,
+        roi: MatLike,
         icon: Path | None,
         target_size: int,
         config: dict[str, Any],
@@ -288,7 +369,7 @@ class DesktopGroundingEngine:
         num_workers = int(config.get("num_cores", 6))
 
         # Pass configurations (config key, human name, method)
-        pass_configs = [
+        template_pass_configs = [
             ("use_color", "Color Pass", self._run_color_pass),
             ("use_lab", "CIELAB Pass", self._run_lab_pass),
             ("use_edge", "Edge Pass", self._run_edge_pass),
@@ -307,8 +388,8 @@ class DesktopGroundingEngine:
                     target_size if name != "ORB Pass" else 0,
                     lambda *a, **kw: self._log(*a, callback=callback, **kw),
                 )
-                for cfg_key, name, func in pass_configs
-                if config.get(cfg_key)
+                for config_key, name, func in template_pass_configs
+                if config.get(config_key)
             ]
 
             # Multiscale variants can help when icons are differently scaled.
@@ -325,7 +406,7 @@ class DesktopGroundingEngine:
                             s_factor,
                             lambda *a, **kw: self._log(*a, callback=callback, **kw),
                         )
-                        for s_factor in [0.8, 1.25]
+                        for s_factor in MULTISCALE_FACTORS
                     ],
                 )
 
@@ -340,10 +421,9 @@ class DesktopGroundingEngine:
 
     def _run_ocr(
         self,
-        roi: NDArray,
+        roi: MatLike,
         text_query: str,
         psm: int,
-        scale: float,
         config: dict[str, Any],
         callback: LogCallback | None = None,
     ) -> list[Candidate]:
@@ -355,7 +435,6 @@ class DesktopGroundingEngine:
             roi,
             text_query,
             psm,
-            scale,
             config,
             lambda *a, **kw: self._log(*a, callback=callback, **kw),
         )
@@ -379,7 +458,7 @@ class DesktopGroundingEngine:
 
     def _targeted_recovery(
         self,
-        roi: NDArray,
+        roi: MatLike,
         templates: list[Candidate],
         text_query: str,
         target_size: int,
@@ -390,7 +469,7 @@ class DesktopGroundingEngine:
         if not templates or not text_query:
             return []
         # Limit the recovery queue size to bound runtime (top-N).
-        queue = templates[:12]
+        queue = templates[:RECOVERY_QUEUE_LIMIT]
         self._log(
             f"RECOVERY: Verifying {len(queue)} candidates...",
             callback=callback,
@@ -412,7 +491,7 @@ class DesktopGroundingEngine:
 
     def _report_results(
         self,
-        canvas: NDArray,
+        canvas: MatLike,
         candidates: list[Candidate],
         t0: float,
         callback: LogCallback | None = None,
@@ -439,7 +518,7 @@ class DesktopGroundingEngine:
 
     def _targeted_label_recovery(
         self,
-        img: NDArray,
+        img: MatLike,
         templates: list[Candidate],
         query: str,
         target_size: int,
@@ -455,15 +534,23 @@ class DesktopGroundingEngine:
         """
         recovered: list[Candidate] = []
         q_lower = query.lower()
-        for idx, t in enumerate(templates):
+        for idx, template_hit in enumerate(templates):
             if self.should_abort():
                 break
 
             # Heuristic search window size around a matched icon center.
-            pad = int(target_size * 0.4)
+            pad = int(target_size * RECOVERY_HORIZONTAL_PAD_FACTOR)
             # y1 starts slightly above the icon center; y2 extends well below the icon.
-            y1, y2 = t.y + (target_size // 2) - 5, t.y + int(target_size * 1.6)
-            x1, x2 = t.x - (target_size // 2) - pad, t.x + (target_size // 2) + pad
+            y1, y2 = (
+                template_hit.y
+                + (target_size // 2)
+                - 5,  # small upward bias to include label overlap above center
+                template_hit.y + int(target_size * RECOVERY_VERTICAL_EXTEND_FACTOR),
+            )
+            x1, x2 = (
+                template_hit.x - (target_size // 2) - pad,
+                template_hit.x + (target_size // 2) + pad,
+            )
 
             # Clamp ROI coordinates so we don't index out of bounds.
             roi = img[
@@ -493,29 +580,40 @@ class DesktopGroundingEngine:
 
             try:
                 # Quick OCR on the small local ROI. Use a single-line PSM for label snippets.
-                data: dict[str, list[Any]] = pytesseract.image_to_data(
+                data = pytesseract.image_to_data(
                     thresh,
                     output_type=pytesseract.Output.DICT,
                     config="--oem 3 --psm 7",
                     timeout=2,
                 )
                 for txt in data.get("text", []):
-                    tc = str(txt).strip().lower()
-                    if len(tc) < 2:
+                    normalized_token = str(txt).strip().lower()
+                    if len(normalized_token) < 2:
                         continue
-                    sim = SequenceMatcher(None, q_lower, tc).ratio()
+                    similarity_score = SequenceMatcher(
+                        None,
+                        q_lower,
+                        normalized_token,
+                    ).ratio()
 
                     # Adjust score based on exact/partial match
-                    if tc == q_lower:
+                    if normalized_token == q_lower:
                         score = 0.95
-                    elif q_lower in tc:
-                        score = 0.6 + 0.35 * sim
+                    elif q_lower in normalized_token:
+                        score = 0.6 + 0.35 * similarity_score
                     else:
-                        score = sim * 0.5  # optional low confidence
+                        score = similarity_score * 0.5  # optional low confidence
 
                     # Only accept reasonably high scores
-                    if score >= 0.5:
-                        recovered.append(Candidate(t.x, t.y, score, "roi_recovery"))
+                    if score >= OCR_RECOVERY_THRESHOLD:
+                        recovered.append(
+                            Candidate(
+                                template_hit.x,
+                                template_hit.y,
+                                score,
+                                "roi_recovery",
+                            ),
+                        )
                         break
 
             except Exception as e:
@@ -526,11 +624,10 @@ class DesktopGroundingEngine:
 
     def _ocr_search_deep(
         self,
-        r: MatLike,
-        q: str,
+        roi_img: MatLike,
+        query: str,
         psm: int,
-        _s: float,
-        _config: dict[str, Any],
+        config: dict[str, Any],
         cb: Callable[..., Any],
     ) -> list[Candidate]:
         """Perform a multi-pass deep OCR search using various preprocessing modes.
@@ -538,27 +635,28 @@ class DesktopGroundingEngine:
         Modes: a set of pre-processing pipelines tuned to different text appearances.
         For each mode we run Tesseract with an appropriate page segmentation mode (PSM).
         """
-        qc, raw_results = q.strip().lower(), []
+        normalized_query = query.strip().lower()
+        raw_results: list[Candidate] = []
         modes = [1, 2, 5, 8, 11, 12]
-        lang = _config.get("ocr_lang", "eng")
+        lang = config.get("ocr_lang", "eng")
 
-        for i, p_num in enumerate(modes):
+        for i, mode_id in enumerate(modes):
             if self.should_abort():
                 break
             progress_val = 40 + (i * 6)
 
-            proc = self._apply_deep_ocr_preprocessing(r, p_num)
+            proc = self._apply_deep_ocr_preprocessing(roi_img, mode_id)
 
-            if _config.get("use_adaptive", False):
+            if config.get("use_adaptive", False):
                 proc = self._enhance_contrast_adaptive(proc)
 
             # Ensure current_psm is always defined; some modes override PSM to 7 for best results.
-            current_psm = 7 if p_num == 12 else psm
+            current_psm = 7 if mode_id == 12 else psm
 
-            cb(f"PROCESS: OCR Pass {p_num}", proc, progress=progress_val)
+            cb(f"PROCESS: OCR Pass {mode_id}", proc, progress=progress_val)
 
             tess_config = f"--oem 3 --psm {current_psm} -c preserve_interword_spaces=1"
-            data: dict[str, list[Any]] = pytesseract.image_to_data(
+            data = pytesseract.image_to_data(
                 proc,
                 output_type=pytesseract.Output.DICT,
                 config=tess_config,
@@ -566,11 +664,23 @@ class DesktopGroundingEngine:
             )
 
             # If the preprocessing scaled the image, we compensate when converting to ROI coords.
-            current_sc = 2.5 if p_num in [5, 11, 12] else 1.0
+            coord_scale_factor = 2.5 if mode_id in [5, 11, 12] else 1.0
 
-            texts, confs = data.get("text", []), data.get("conf", [])
-            lefts, tops = data.get("left", []), data.get("top", [])
-            widths, heights = data.get("width", []), data.get("height", [])
+            # Tesseract's image_to_data returns a dictionary of parallel arrays.
+            # Each index corresponds to one detected text token:
+            #   text[i]   -> recognized string
+            #   conf[i]   -> confidence score
+            #   left[i]   -> bounding box x coordinate
+            #   top[i]    -> bounding box y coordinate
+            #   width[i]  -> bounding box width
+            #   height[i] -> bounding box height
+            # All arrays share the same length, so index `i` represents one token.
+            texts = data.get("text", [])
+            confs = data.get("conf", [])
+            lefts = data.get("left", [])
+            tops = data.get("top", [])
+            widths = data.get("width", [])
+            heights = data.get("height", [])
 
             for j, txt in enumerate(texts):
                 tc = str(txt).strip().lower()
@@ -580,14 +690,14 @@ class DesktopGroundingEngine:
                 except Exception:
                     # treat unknown confidence as low
                     conf = 0.0
-                if conf < 10 or len(tc) < 2:
+                if conf < OCR_MIN_CONFIDENCE or len(tc) < OCR_MIN_TOKEN_LENGTH:
                     # Skip extremely low-confidence or very short tokens (likely noise).
                     continue
-                sim = SequenceMatcher(None, qc, tc).ratio()
+                sim = SequenceMatcher(None, normalized_query, tc).ratio()
                 # Accept either substring match or moderate similarity.
-                if tc == qc:
+                if tc == normalized_query:
                     score = 1.0  # exact match
-                elif qc in tc:
+                elif normalized_query in tc:
                     score = (
                         0.5 + 0.5 * sim
                     )  # partial match; base 0.5 + similarity bonus
@@ -596,10 +706,10 @@ class DesktopGroundingEngine:
 
                 raw_results.append(
                     Candidate(
-                        int((lefts[j] + widths[j] / 2) / current_sc),
-                        int((tops[j] + heights[j] / 2) / current_sc),
+                        int((lefts[j] + widths[j] / 2) / coord_scale_factor),
+                        int((tops[j] + heights[j] / 2) / coord_scale_factor),
                         score,
-                        f"ocr_m{p_num}",
+                        f"ocr_m{mode_id}",
                     ),
                 )
         # Deduplicate overlapping OCR hits (small radius) before returning.
@@ -607,82 +717,118 @@ class DesktopGroundingEngine:
 
     def _run_color_pass(
         self,
-        r: MatLike,
+        roi_img: MatLike,
         p: Path,
-        tw: int,
+        template_width: int,
         cb: Callable[..., Any],
     ) -> list[Candidate]:
         """Run a standard BGR color-based template matching pass."""
-        tpl, m, th = self._prep_tpl(p, tw)
-        res = cv2.matchTemplate(
-            r,
-            tpl,
+        template_img, template_mask, template_height = self._prep_tpl(p, template_width)
+        match_result = cv2.matchTemplate(
+            roi_img,
+            template_img,
             cv2.TM_CCOEFF_NORMED,
-            mask=m,
+            mask=template_mask,
         )
-        cb("PREP: Color Template", tpl, progress=15)
-        return self._extract_tpl_locs(res, 0.7, tw, th, "tpl_color")
+        cb("PREP: Color Template", template_img, progress=15)
+        return self._extract_tpl_locs(
+            match_result,
+            TPL_COLOR_THRESHOLD,
+            template_width,
+            template_height,
+            "tpl_color",
+        )
 
     def _run_lab_pass(
         self,
-        r: MatLike,
+        roi_img: MatLike,
         p: Path,
-        tw: int,
+        template_width: int,
         cb: Callable[..., Any],
     ) -> list[Candidate]:
         """Run template matching in CIELAB to be more robust to illumination changes."""
-        tpl_b, _, th = self._prep_tpl(p, tw)
-        res = cv2.matchTemplate(
-            cv2.cvtColor(r, cv2.COLOR_BGR2Lab),
+        tpl_b, _, template_height = self._prep_tpl(p, template_width)
+        match_result = cv2.matchTemplate(
+            cv2.cvtColor(roi_img, cv2.COLOR_BGR2Lab),
             cv2.cvtColor(tpl_b, cv2.COLOR_BGR2Lab),
             cv2.TM_CCOEFF_NORMED,
         )
         cb("PREP: Lab Template", tpl_b, progress=20)
-        return self._extract_tpl_locs(res, 0.7, tw, th, "tpl_lab")
+        return self._extract_tpl_locs(
+            match_result,
+            TPL_LAB_THRESHOLD,
+            template_width,
+            template_height,
+            "tpl_lab",
+        )
 
     def _run_edge_pass(
         self,
-        r: MatLike,
+        roi_img: MatLike,
         p: Path,
-        tw: int,
+        template_width: int,
         cb: Callable[..., Any],
     ) -> list[Candidate]:
         """Run edge-map based matching (Canny) — useful when color is misleading."""
-        tpl_b, _, th = self._prep_tpl(p, tw)
-        re = cv2.Canny(cv2.cvtColor(r, cv2.COLOR_BGR2GRAY), 50, 150)
-        te = cv2.Canny(cv2.cvtColor(tpl_b, cv2.COLOR_BGR2GRAY), 50, 150)
-        res = cv2.matchTemplate(re, te, cv2.TM_CCOEFF_NORMED)
-        cb("PREP: Edge Map", re, progress=25)
+        tpl_b, _, template_height = self._prep_tpl(p, template_width)
+        roi_edges = cv2.Canny(
+            cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY),
+            CANNY_LOW_THRESHOLD,
+            CANNY_HIGH_THRESHOLD,
+        )
+        template_edges = cv2.Canny(
+            cv2.cvtColor(tpl_b, cv2.COLOR_BGR2GRAY),
+            CANNY_LOW_THRESHOLD,
+            CANNY_HIGH_THRESHOLD,
+        )
+        match_result = cv2.matchTemplate(
+            roi_edges,
+            template_edges,
+            cv2.TM_CCOEFF_NORMED,
+        )
+        cb("PREP: Edge Map", roi_edges, progress=25)
         # edge matches are lower-confidence -> lower threshold
-        return self._extract_tpl_locs(res, 0.4, tw, th, "tpl_edge")
+        return self._extract_tpl_locs(
+            match_result,
+            TPL_EDGE_THRESHOLD,
+            template_width,
+            template_height,
+            "tpl_edge",
+        )
 
     def _run_gray_pass(
         self,
-        r: MatLike,
+        roi_img: MatLike,
         p: Path,
-        tw: int,
+        template_width: int,
         cb: Callable[..., Any],
     ) -> list[Candidate]:
         """Run grayscale template matching (intensity-based)."""
-        tpl_b, _, th = self._prep_tpl(p, tw)
+        tpl_b, _, template_height = self._prep_tpl(p, template_width)
 
-        gray_r = cv2.cvtColor(r, cv2.COLOR_BGR2GRAY)
+        gray_r = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
         gray_t = cv2.cvtColor(tpl_b, cv2.COLOR_BGR2GRAY)
 
-        res = cv2.matchTemplate(
+        match_result = cv2.matchTemplate(
             gray_r,
             gray_t,
             cv2.TM_CCOEFF_NORMED,
         )
 
         cb("PREP: Grayscale Template", gray_r, progress=23)
-        return self._extract_tpl_locs(res, 0.65, tw, th, "tpl_gray")
+        return self._extract_tpl_locs(
+            match_result,
+            TPL_GRAY_THRESHOLD,
+            template_width,
+            template_height,
+            "tpl_gray",
+        )
 
     def _run_orb_pass(
         self,
-        r: MatLike,
+        roi_img: MatLike,
         p: Path,
-        _: int,
+        _template_width: int,
         _cb: Callable[..., Any],
     ) -> list[Candidate]:
         """Run ORB feature matching to find clusters of keypoint matches.
@@ -690,74 +836,104 @@ class DesktopGroundingEngine:
         ORB is helpful for icons that have distinctive keypoints but poor template correlation.
         We return a single cluster center if enough matches exist.
         """
-        tpl = cv2.imread(str(p))
-        if tpl is None:
+        template_img = cv2.imread(str(p))
+        if template_img is None:
             return []
         orb = cv2.ORB.create(nfeatures=1000)
-        _k1, d1 = orb.detectAndCompute(tpl, None)
-        k2, d2 = orb.detectAndCompute(r, None)
-        if d1 is None or d2 is None:
+        _template_keypoints, template_descriptors = orb.detectAndCompute(
+            template_img,
+            None,
+        )
+        roi_keypoints, roi_descriptors = orb.detectAndCompute(roi_img, None)
+        if template_descriptors is None or roi_descriptors is None:
             return []
         bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        m = sorted(bf.match(d1, d2), key=lambda x: x.distance)
+        matches = sorted(
+            bf.match(template_descriptors, roi_descriptors),
+            key=lambda x: x.distance,
+        )
         # Threshold: need a minimum number of good matches to trust the cluster.
-        if len(m) > 15:
-            pts = np.array([k2[i.trainIdx].pt for i in m[:20]], dtype=np.float32)
-            center = np.mean(pts, axis=0)
+        if len(matches) > ORB_MIN_MATCHES:
+            matched_points = np.array(
+                [roi_keypoints[i.trainIdx].pt for i in matches[:ORB_SAMPLE_POINTS]],
+                dtype=np.float32,
+            )
+            center = np.mean(matched_points, axis=0)
             # ORB center reported as candidate; confidence is high but not fused with OCR.
             return [Candidate(int(center[0]), int(center[1]), 0.9, "orb")]
         return []
 
     def _run_scaled_pass(
         self,
-        r: MatLike,
+        roi_img: MatLike,
         p: Path,
-        tw: int,
-        sf: float,
+        template_width: int,
+        scale_factor: float,
         _cb: Callable[..., Any],
     ) -> list[Candidate]:
         """Run template matching at a specific scale factor (multiscale matching)."""
-        stw = int(tw * sf)
-        tpl, m, th = self._prep_tpl(p, stw)
-        # If template is bigger than ROI skip to avoid errors.
-        if tpl.shape[0] > r.shape[0] or tpl.shape[1] > r.shape[1]:
-            return []
-        res = cv2.matchTemplate(
-            r,
-            tpl,
-            cv2.TM_CCOEFF_NORMED,
-            mask=m,
+        scaled_template_width = int(template_width * scale_factor)
+        template_img, template_mask, template_height = self._prep_tpl(
+            p,
+            scaled_template_width,
         )
-        return self._extract_tpl_locs(res, 0.65, stw, th, f"scale_{sf}")
+        # If template is bigger than ROI skip to avoid errors.
+        if (
+            template_img.shape[0] > roi_img.shape[0]
+            or template_img.shape[1] > roi_img.shape[1]
+        ):
+            return []
+        match_result = cv2.matchTemplate(
+            roi_img,
+            template_img,
+            cv2.TM_CCOEFF_NORMED,
+            mask=template_mask,
+        )
+        return self._extract_tpl_locs(
+            match_result,
+            0.65,
+            scaled_template_width,
+            template_height,
+            f"scale_{scale_factor}",
+        )
 
-    def _prep_tpl(self, path: Path, tw: int) -> tuple[MatLike, MatLike | None, int]:
+    def _prep_tpl(
+        self,
+        path: Path,
+        template_width: int,
+    ) -> tuple[MatLike, MatLike | None, int]:
         """Prepare a template image by resizing and extracting alpha masks if available.
 
         Returns (tpl_rgb, mask_or_none, computed_height)
         """
-        tpl_raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if tpl_raw is None:
+        template_raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if template_raw is None:
             msg = f"Failed to load template at {path}"
             raise FileNotFoundError(msg)
 
         # Compute scaling to requested template width (tw).
-        scale = tw / tpl_raw.shape[1]
+        scale = template_width / template_raw.shape[1]
         # computed template height after scaling
-        th = int(tpl_raw.shape[0] * scale)
+        template_height = int(template_raw.shape[0] * scale)
 
         # If image has an alpha channel, extract and resize mask to allow masked matching.
         mask = (
-            cv2.resize(tpl_raw[:, :, 3], (tw, th)) if tpl_raw.shape[-1] == 4 else None
+            cv2.resize(template_raw[:, :, 3], (template_width, template_height))
+            if template_raw.shape[-1] == 4
+            else None
         )
-        tpl = cv2.resize(tpl_raw[:, :, 0:3] if mask is not None else tpl_raw, (tw, th))
-        return tpl, mask, th
+        template_rgb = cv2.resize(
+            template_raw[:, :, 0:3] if mask is not None else template_raw,
+            (template_width, template_height),
+        )
+        return template_rgb, mask, template_height
 
     def _extract_tpl_locs(
         self,
-        res: NDArray,
-        thr: float,
-        tw: int,
-        th: int,
+        match_map: MatLike,
+        score_threshold: float,
+        template_width: int,
+        template_height: int,
         method: str,
     ) -> list[Candidate]:
         """Extract candidate coordinates and populate bounding boxes for geometry validation.
@@ -765,21 +941,21 @@ class DesktopGroundingEngine:
         Note: OpenCV.matchTemplate returns top-left coordinates. We convert to center coords
         so candidates are consistently represented by their center.
         """
-        locs = np.where(res >= thr)
-        candidates = []
+        match_locations = np.where(match_map >= score_threshold)
+        candidates: list[Candidate] = []
         # zip(*locs[::-1]) iterates (x, y) pairs
-        for pt in zip(*locs[::-1], strict=False):
-            score_val = float(res[pt[1], pt[0]])
+        for top_left in zip(*match_locations[::-1], strict=False):
+            match_score = float(match_map[top_left[1], top_left[0]])
             # Skip invalid scores
-            if not np.isfinite(score_val):
+            if not np.isfinite(match_score):
                 continue
 
-            bbox = (int(pt[0]), int(pt[1]), tw, th)
+            bbox = (int(top_left[0]), int(top_left[1]), template_width, template_height)
             candidates.append(
                 Candidate(
-                    x=int(pt[0] + tw // 2),
-                    y=int(pt[1] + th // 2),
-                    score=score_val,
+                    x=int(top_left[0] + template_width // 2),
+                    y=int(top_left[1] + template_height // 2),
+                    score=match_score,
                     method=method,
                     bbox=bbox,
                 ),
@@ -788,8 +964,7 @@ class DesktopGroundingEngine:
 
     def _detect_desktop_icon_size(
         self,
-        roi: NDArray,
-        _cb: Callable[..., Any],
+        roi: MatLike,
         config: dict[str, Any] | None = None,
     ) -> int:
         """Detect the dominant desktop icon width using contour widths.
@@ -799,22 +974,35 @@ class DesktopGroundingEngine:
           - config["max_icon_width"] (default 150)
         """
         cfg = config or {}
-        min_w = cfg.get("min_icon_width", 30)
-        max_w = cfg.get("max_icon_width", 150)
+        min_w = cfg.get("min_icon_width", ICON_MIN_WIDTH)
+        max_w = cfg.get("max_icon_width", ICON_MAX_WIDTH)
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
-        cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        sizes = [
+        edges = cv2.Canny(gray, CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD)
+        contours, _ = cv2.findContours(
+            edges,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        candidate_widths = [
             cv2.boundingRect(c)[2]
-            for c in cnts
+            for c in contours
             if min_w < cv2.boundingRect(c)[2] < max_w
         ]
 
         # Fallback to a reasonable default when detection fails.
-        return int(max(set(sizes), key=sizes.count)) if sizes else 64
+        if not candidate_widths:
+            return DEFAULT_ICON_SIZE
 
-    def _draw_results(self, canvas: NDArray, candidates: list[Candidate]) -> NDArray:
+        # Choose the most frequent width (mode)
+        width_counts: dict[int, Any] = {}
+        for w in candidate_widths:
+            width_counts[w] = width_counts.get(w, 0) + 1
+
+        dominant_width = max(width_counts.keys(), key=lambda w: width_counts[w])
+        return int(dominant_width)
+
+    def _draw_results(self, canvas: MatLike, candidates: list[Candidate]) -> MatLike:
         """Draw detection markers and labels onto the debug canvas for visualization."""
         viz = canvas.copy()
         for i, c in enumerate(candidates):
@@ -849,8 +1037,8 @@ class DesktopGroundingEngine:
 
     def _non_max_suppression(
         self,
-        hits: list[Candidate],
-        thresh: int,
+        candidates: list[Candidate],
+        template_size: int,
     ) -> list[Candidate]:
         """Apply non-maximum suppression to remove overlapping template hits.
 
@@ -858,18 +1046,21 @@ class DesktopGroundingEngine:
           - Keep top-N (200) by score to bound cost of pairwise checking.
           - Compare squared distances to avoid sqrt until necessary.
         """
-        if not hits:
+        if not candidates:
             return []
-        sh = sorted(hits, key=lambda x: x.score, reverse=True)[:200]
-        final: list[Candidate] = []
+        sorted_hits = sorted(candidates, key=lambda x: x.score, reverse=True)[
+            :MAX_TEMPLATE_HITS
+        ]
+        kept_candidates: list[Candidate] = []
         # Distance threshold squared: 60% of template height by default
-        d_thresh_sq = (thresh * 0.6) ** 2
-        for c in sh:
+        distance_threshold_sq = (template_size * NMS_RADIUS_FACTOR) ** 2
+        for c in sorted_hits:
             if not any(
-                ((c.x - a.x) ** 2 + (c.y - a.y) ** 2) < d_thresh_sq for a in final
+                ((c.x - a.x) ** 2 + (c.y - a.y) ** 2) < distance_threshold_sq
+                for a in kept_candidates
             ):
-                final.append(c)
-        return final
+                kept_candidates.append(c)
+        return kept_candidates
 
     def _timed_wrapper(
         self,
@@ -880,9 +1071,9 @@ class DesktopGroundingEngine:
     ) -> list[Candidate]:
         """Wrap a function call to measure its execution time and record a PerfStat."""
         t0 = time.time()
-        res = func(*args, **kwargs)
-        self.perf_stats.append(PerfStat(name, (time.time() - t0) * 1000, len(res)))
-        return res
+        results = func(*args, **kwargs)
+        self.perf_stats.append(PerfStat(name, (time.time() - t0) * 1000, len(results)))
+        return results
 
     def _gui_benchmark_report(
         self,
@@ -900,47 +1091,64 @@ class DesktopGroundingEngine:
         report.extend(new_entries)
         callback("\n".join(report), "HEAD", 100)
 
-    def _apply_deep_ocr_preprocessing(self, r: MatLike, p_num: int) -> MatLike:
+    def _apply_deep_ocr_preprocessing(self, roi_img: MatLike, mode_id: int) -> MatLike:
         """Apply a specific image preprocessing pipeline for deep OCR detection.
 
         Each pipeline is tuned to a scenario (high-contrast, inverted text, upscaling, morphological top-hat).
         Choose mode numbers carefully — they map to preprocessing strategies used in _ocr_search_deep.
         """
-        g = cv2.cvtColor(r, cv2.COLOR_BGR2GRAY)
-        if p_num == 1:
+        gray_image = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
+        if mode_id == 1:
             # Standard Otsu binarization
-            return cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-        if p_num == 2:
+            return cv2.threshold(
+                gray_image,
+                0,
+                255,
+                cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+            )[1]
+        if mode_id == 2:
             # Inverted + Otsu — helpful for light-on-dark text.
             return cv2.threshold(
-                cv2.bitwise_not(g),
+                cv2.bitwise_not(gray_image),
                 0,
                 255,
                 cv2.THRESH_BINARY + cv2.THRESH_OTSU,
             )[1]
-        if p_num == 5:
+        if mode_id == 5:
             # Upscale to improve OCR on small fonts.
-            return cv2.resize(g, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-        if p_num in [11, 12]:
+            return cv2.resize(
+                gray_image,
+                (0, 0),
+                fx=2.5,
+                fy=2.5,
+                interpolation=cv2.INTER_CUBIC,
+            )
+        if mode_id in [11, 12]:
             # Upscale + top-hat morphological op to highlight strokes.
-            up = cv2.resize(g, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-            k = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+            upscaled_image = cv2.resize(
+                gray_image,
+                (0, 0),
+                fx=2.5,
+                fy=2.5,
+                interpolation=cv2.INTER_CUBIC,
+            )
+            morph_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
             return cv2.threshold(
-                cv2.morphologyEx(up, cv2.MORPH_TOPHAT, k),
+                cv2.morphologyEx(upscaled_image, cv2.MORPH_TOPHAT, morph_kernel),
                 0,
                 255,
                 cv2.THRESH_BINARY + cv2.THRESH_OTSU,
             )[1]
-        if p_num == 8:
+        if mode_id == 8:
             # CLAHE + Otsu: good for uneven lighting.
             clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(10, 10))
             return cv2.threshold(
-                clahe.apply(g),
+                clahe.apply(gray_image),
                 0,
                 255,
                 cv2.THRESH_BINARY + cv2.THRESH_OTSU,
             )[1]
-        return g
+        return gray_image
 
     def _deduplicate_with_overlap_logic(
         self,
@@ -950,22 +1158,31 @@ class DesktopGroundingEngine:
 
         We sort by score desc and keep the highest scoring candidate in local neighborhoods.
         """
-        clean: list[Candidate] = []
-        for cand in sorted(raw_results, key=lambda x: x.score, reverse=True):
-            # Radius of 15 px chosen as small token-level dedupe for OCR results.
+        filtered_candidates: list[Candidate] = []
+        for candidate in sorted(raw_results, key=lambda x: x.score, reverse=True):
+            # Radius of TOKEN_DEDUP_RADIUS_PX chosen as small token-level dedupe for OCR results.
             if not any(
-                np.sqrt((cand.x - k.x) ** 2 + (cand.y - k.y) ** 2) < 15 for k in clean
+                np.sqrt(
+                    (candidate.x - kept_candidate.x) ** 2
+                    + (candidate.y - kept_candidate.y) ** 2,
+                )
+                < TOKEN_DEDUP_RADIUS_PX
+                for kept_candidate in filtered_candidates
             ):
-                clean.append(cand)
-        return clean
+                filtered_candidates.append(candidate)
+        return filtered_candidates
+
+    @staticmethod
+    def _euclidean_distance(a: Candidate, b: Candidate) -> float:
+        """Return Euclidean distance between two candidate centers."""
+        return float(np.hypot(a.x - b.x, a.y - b.y))
 
     def _finalize_results(
         self,
-        t_hits: list[Candidate],
-        o_hits: list[Candidate],
-        ts: int,
-        thr: float,
-        _cfg: dict[str, Any],
+        template_hits: list[Candidate],
+        ocr_hits: list[Candidate],
+        template_size: int,
+        score_threshold: float,
     ) -> list[Candidate]:
         """Fuse template and OCR matches and apply final filtering and NMS.
 
@@ -977,40 +1194,60 @@ class DesktopGroundingEngine:
           - Apply a final proximity-based dedupe using ts * 0.7 and threshold filter.
         """
         final_list: list[Candidate] = []
-        used_ocr, used_tpl = set(), set()
-        for i, t in enumerate(t_hits):
-            for j, o in enumerate(o_hits):
-                if j in used_ocr:
+        matched_ocr_indices, matched_template_indices = set[int](), set[int]()
+        for template_index, template_hit in enumerate(template_hits):
+            for ocr_index, ocr_hit in enumerate(ocr_hits):
+                if ocr_index in matched_ocr_indices:
                     continue
-                # Spatial fusion threshold (1.5 * template size) — heuristic.
-                if np.sqrt((t.x - o.x) ** 2 + (t.y - o.y) ** 2) < ts * 1.5:
-                    used_ocr.add(j)
-                    used_tpl.add(i)
+                # Spatial fusion threshold (FUSION_DISTANCE_FACTOR * template size) — heuristic.
+                if (
+                    self._euclidean_distance(template_hit, ocr_hit)
+                    < template_size * FUSION_DISTANCE_FACTOR
+                ):
+                    matched_ocr_indices.add(ocr_index)
+                    matched_template_indices.add(template_index)
                     final_list.append(
                         Candidate(
-                            t.x,
-                            t.y,
-                            max(t.score, o.score) + 0.1,
+                            template_hit.x,
+                            template_hit.y,
+                            max(template_hit.score, ocr_hit.score) + 0.1,
                             "fused_match",
-                            t.score,
-                            o.score,
+                            template_hit.score,
+                            ocr_hit.score,
                         ),
                     )
                     break
         # Add leftovers (template-only and OCR-only)
-        final_list.extend([t for i, t in enumerate(t_hits) if i not in used_tpl])
-        final_list.extend([o for j, o in enumerate(o_hits) if j not in used_ocr])
+        final_list.extend(
+            [
+                t
+                for i, t in enumerate(template_hits)
+                if i not in matched_template_indices
+            ],
+        )
+        final_list.extend(
+            [o for j, o in enumerate(ocr_hits) if j not in matched_ocr_indices],
+        )
 
         # Final proximity dedupe: keep highest scoring per local neighborhood.
-        res: list[Candidate] = []
+        deduped_results: list[Candidate] = []
         for c in sorted(final_list, key=lambda x: x.score, reverse=True):
             if not any(
-                np.sqrt((c.x - r.x) ** 2 + (c.y - r.y) ** 2) < ts * 0.7 for r in res
+                np.sqrt(
+                    (c.x - existing_candidate.x) ** 2
+                    + (c.y - existing_candidate.y) ** 2,
+                )
+                < template_size * FINAL_DEDUP_RADIUS_FACTOR
+                for existing_candidate in deduped_results
             ):
-                res.append(c)
+                deduped_results.append(c)
 
         # Final threshold filter (score must be >= thr).
-        return [r for r in res if r.score >= thr]
+        return [
+            existing_candidate
+            for existing_candidate in deduped_results
+            if existing_candidate.score >= score_threshold
+        ]
 
     def _validate_spatial_consistency(
         self,
@@ -1022,14 +1259,14 @@ class DesktopGroundingEngine:
         Adjust each hit's geometry_score based on aspect ratio deviation and slightly
         penalize the visual score if the shape is inconsistent.
         """
-        tpl = cv2.imread(str(icon_path))
-        if tpl is None or not hits:
+        template_img = cv2.imread(str(icon_path))
+        if template_img is None or not hits:
             return hits
 
-        h_tpl, w_tpl = tpl.shape[:2]
-        target_ratio = w_tpl / h_tpl
+        template_height, template_width = template_img.shape[:2]
+        target_ratio = template_width / template_height
 
-        validated_hits = []
+        validated_hits: list[Candidate] = []
         for hit in hits:
             if hit.bbox:
                 _, _, w_hit, h_hit = hit.bbox
@@ -1043,6 +1280,7 @@ class DesktopGroundingEngine:
                 hit.geometry_score = float(deviation)
 
                 # Slightly adjust hit score by geometry agreement (0.8 -> 1.0 factor).
+                # Keep 80% of original score minimum; reward up to +20% for perfect ratio match
                 hit.score *= 0.8 + (0.2 * deviation)
 
             validated_hits.append(hit)

@@ -219,12 +219,22 @@ class Worker(QThread):
     def __init__(
         self,
         engine: DesktopGroundingEngine,
-        params: list,
         config: dict,
+        img_path: Path,
+        icon_path: Path | None,
+        text_query: str,
+        threshold: float,
     ) -> None:
         """Initialize the worker thread with the engine instance and search parameters."""
         super().__init__()
-        self.engine, self.params, self.config = engine, params, config
+
+        self.engine = engine
+        self.config = config
+
+        self.img_path = img_path
+        self.icon_path = icon_path
+        self.text_query = text_query
+        self.threshold = threshold
 
     def run(self) -> None:
         """Execute the engine search logic and bridge signals back to the main UI."""
@@ -248,7 +258,11 @@ class Worker(QThread):
                     self.frame_signal.emit(self.engine.debug_frame)
 
             results = self.engine.locate_elements(
-                *self.params,
+                screenshot_path=self.img_path,
+                icon_image=self.icon_path,
+                text_query=self.text_query,
+                threshold=self.threshold,
+                psm=11,
                 config=self.config,
                 callback=callback_bridge,
             )
@@ -604,16 +618,14 @@ class GroundingLab(QMainWindow):
         }
         config["num_cores"] = self.num_cores.value()
 
-        params = [
+        self.worker = Worker(
+            engine,
+            config,
             Path(self.img_path),
             Path(self.icon_path) if self.icon_path else None,
             self.query_input.text(),
             self.threshold.value(),
-            11,
-            2.0,
-        ]
-
-        self.worker = Worker(engine, params, config)
+        )
         self.worker.log_signal.connect(self.log)
         self.worker.frame_signal.connect(self.update_view)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
