@@ -10,7 +10,7 @@ dependencies = [
   "pyautogui>=0.9.54",
   "pygetwindow>=0.0.9",
   "pyperclip>=1.11.0",
-  "pyqt6>=6.10.2",
+  "pyside6>=6.10.2",
   "pytesseract>=0.3.13",
   "python-dotenv>=1.2.1",
   "requests>=2.32.5",
@@ -21,16 +21,18 @@ dev = ["pre-commit>=4.5.0", "pyright>=1.1.407", "ruff>=0.14.9"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ['opencv_solution', 'llm_solution']
+packages = ['cv_solution', 'llm_solution']
 
 [tool.uv]
 package = true
 
 [project.scripts]
 start-llm = "llm_solution.gui:run"
-start-opencv = "opencv_solution.gui:run"
-notepad-llm = "notepad_automation:run_llm"
-notepad-opencv = "notepad_automation:run_opencv"
+start-cv = "cv_solution.gui:run"
+notepad-llm = "main:run_llm"
+notepad-cv = "main:run_cv"
+notepad-cv-first = "main:run_hybrid_cv_first"
+notepad-llm-first = "main:run_hybrid_llm_first"
 
 [tool.pyright]
 typeCheckingMode = "basic"
@@ -46,6 +48,7 @@ ignore = [
   'D417',
   'E501',
   'E741',
+  'ERA001',
   'N802',
   'PLR0913',
   "PLR0912",

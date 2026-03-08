@@ -1,6 +1,6 @@
 """Provide a graphical interface for the Desktop Grounding Engine.
 
-This module implements a PyQt6-based laboratory for testing computer vision
+This module implements a PySide6-based laboratory for testing computer vision
 and OCR detection strategies on desktop screenshots.
 """
 
@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import cv2
-from PyQt6.QtCore import QEvent, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import (
+import numpy as np
+import pygetwindow as gw
+from PySide6.QtCore import QEvent, Qt, QThread, Signal
+from PySide6.QtGui import (
     QColor,
     QCursor,
     QImage,
@@ -21,9 +23,10 @@ from PyQt6.QtGui import (
     QPixmap,
     QResizeEvent,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -41,14 +44,21 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from opencv_solution.grounding_engine import DesktopGroundingEngine
+from cv_solution.engine import CVGroundingEngine, GroundingConfig
+from screenshot_service import ScreenshotService
 
 if TYPE_CHECKING:
-    import numpy as np
+    from cv2.typing import MatLike
+
+    from cv_solution.models import Candidate
 
 # --- STYLING CONSTANTS ---
-BG_COLOR, SURFACE_COLOR, ACCENT_COLOR = "#0F0F0F", "#1A1A1A", "#00E5FF"
-SUCCESS_COLOR, WARNING_COLOR, ERROR_COLOR = "#00FF88", "#FFD600", "#FF3D00"
+BG_COLOR = "#0F0F0F"
+SURFACE_COLOR = "#1A1A1A"
+ACCENT_COLOR = "#00E5FF"
+SUCCESS_COLOR = "#00FF88"
+WARNING_COLOR = "#FFD600"
+ERROR_COLOR = "#FF3D00"
 
 GLOBAL_STYLE = f"""
     QMainWindow {{
@@ -75,7 +85,7 @@ GLOBAL_STYLE = f"""
         padding: 0 5px;
         top: 10px;
     }}
-    QLineEdit, QDoubleSpinBox, QSpinBox {{
+    QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {{
         background-color: {SURFACE_COLOR};
         border: 1px solid #444;
         padding: 6px;
@@ -122,6 +132,14 @@ GLOBAL_STYLE = f"""
         font-family: 'Consolas';
         font-size: 11px;
     }}
+    QToolTip {{
+        background-color: #222222;
+        color: {ACCENT_COLOR};
+        border: 1px solid {ACCENT_COLOR};
+        padding: 5px;
+        border-radius: 3px;
+        font-family: 'Consolas';
+    }}
 """
 
 
@@ -136,7 +154,7 @@ class ZoomableLabel(QLabel):
         self.zoom_factor = 3.0
         self.zoom_size = 300
 
-    def set_frame(self, frame: np.ndarray | None) -> None:
+    def set_frame(self, frame: MatLike | None) -> None:
         """Update the internal high-resolution frame used for magnification."""
         self.full_res_frame = frame.copy() if frame is not None else None
         self.update()
@@ -211,16 +229,16 @@ class ZoomableLabel(QLabel):
 class Worker(QThread):
     """Handle the execution of the grounding engine in a background thread."""
 
-    finished = pyqtSignal(list, object)
-    log_signal = pyqtSignal(str, str)
-    frame_signal = pyqtSignal(object)
-    progress_signal = pyqtSignal(int)
+    finished = Signal(list, object)
+    log_signal = Signal(str, str)
+    frame_signal = Signal(object)
+    progress_signal = Signal(int)
 
     def __init__(
         self,
-        engine: DesktopGroundingEngine,
-        config: dict,
-        img_path: Path,
+        engine: CVGroundingEngine,
+        config: GroundingConfig,
+        window_title: str,
         icon_path: Path | None,
         text_query: str,
         threshold: float,
@@ -231,13 +249,13 @@ class Worker(QThread):
         self.engine = engine
         self.config = config
 
-        self.img_path = img_path
+        self.window_title = window_title
         self.icon_path = icon_path
         self.text_query = text_query
         self.threshold = threshold
 
     def run(self) -> None:
-        """Execute the engine search logic and bridge signals back to the main UI."""
+        """Execute engine logic using PIL images from the ScreenshotService."""
         try:
             self.engine.should_abort = self.isInterruptionRequested
 
@@ -252,17 +270,28 @@ class Worker(QThread):
                 if progress is not None:
                     self.progress_signal.emit(progress)
                 if (
-                    hasattr(self.engine, "debug_frame")
-                    and self.engine.debug_frame is not None
+                    hasattr(self.engine, "last_debug_frame")
+                    and self.engine.last_debug_frame is not None
                 ):
-                    self.frame_signal.emit(self.engine.debug_frame)
+                    self.frame_signal.emit(self.engine.last_debug_frame)
 
+            shot_service = ScreenshotService()
+
+            # Handle PIL Objects
+            if self.window_title == "Desktop":
+                self.log_signal.emit("CAPTURING Desktop (PIL Mode)", "INFO")
+                active_image = shot_service.capture_desktop()
+            else:
+                self.log_signal.emit(f"ISOLATING WINDOW: {self.window_title}", "INFO")
+                active_image, _ = shot_service.capture_app_window(
+                    window_title=self.window_title,
+                )
+
+            # Pass the PIL image directly to the engine
             results = self.engine.locate_elements(
-                screenshot_path=self.img_path,
+                screenshot=active_image,
                 icon_image=self.icon_path,
                 text_query=self.text_query,
-                threshold=self.threshold,
-                psm=11,
                 config=self.config,
                 callback=callback_bridge,
             )
@@ -272,7 +301,8 @@ class Worker(QThread):
                 self.finished.emit([], None)
             else:
                 self.progress_signal.emit(100)
-                self.finished.emit(results, getattr(self.engine, "debug_frame", None))
+                raw_cv2 = cv2.cvtColor(np.array(active_image), cv2.COLOR_RGB2BGR)
+                self.finished.emit(results, raw_cv2)
 
         except Exception as e:
             self.log_signal.emit(f"RUNTIME ERROR: {e!s}", "ERROR")
@@ -288,7 +318,6 @@ class GroundingLab(QMainWindow):
         self.setWindowTitle("VISION GROUNDING ENGINE v0.2")
         self.setMinimumSize(1400, 900)
         self.setStyleSheet(GLOBAL_STYLE)
-        self.img_path: str | None = None
         self.icon_path: str | None = None
         self.last_results: list = []
         self.worker: Worker | None = None
@@ -296,6 +325,8 @@ class GroundingLab(QMainWindow):
 
     def init_ui(self) -> None:
         """Construct the layout, sidebars, and viewport widgets."""
+        # Create reference for defaults
+        d = GroundingConfig()
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
@@ -311,16 +342,32 @@ class GroundingLab(QMainWindow):
         input_f = QFormLayout(input_group)
         self.query_input = QLineEdit()
         self.query_input.setPlaceholderText("Enter text label to find...")
-        self.btn_ss = QPushButton("SELECT SCREENSHOT")
+        self.query_input.textChanged.connect(self.update_toggle_states)
+
         self.btn_icon = QPushButton("SELECT ICON")
+        self.btn_icon.clicked.connect(self.select_icon)
+
+        self.window_selector = QComboBox()
+        self.btn_refresh = QPushButton("⟳")
+        self.btn_refresh.setFixedWidth(40)
+        self.btn_refresh.clicked.connect(self.refresh_windows)
+
+        window_container = QWidget()
+        window_container_layout = QHBoxLayout(window_container)
+        window_container_layout.setContentsMargins(0, 0, 0, 0)
+        window_container_layout.setSpacing(5)
+        window_container_layout.addWidget(self.window_selector)
+        window_container_layout.addWidget(self.btn_refresh)
+
         input_f.addRow("QUERY", self.query_input)
-        input_f.addRow(self.btn_ss)
         input_f.addRow(self.btn_icon)
+        input_f.addRow("TARGET", window_container)
         sidebar_layout.addWidget(input_group)
 
         # --- 2a. TEMPLATE MATCHING PASSES ---
         template_group = QGroupBox("Template Matching Passes")
         template_v = QVBoxLayout(template_group)
+
         self.chk_color = QCheckBox("Color Match (BGR)")
         self.chk_lab = QCheckBox("CIELAB Match (Lighting)")
         self.chk_edge = QCheckBox("Edge/Canny Match")
@@ -328,21 +375,43 @@ class GroundingLab(QMainWindow):
         self.chk_orb = QCheckBox("ORB (Rotation Invariant)")
         self.chk_multiscale = QCheckBox("Multi-Scale Sweep")
 
-        for chk in [
-            self.chk_color,
-            self.chk_lab,
-            self.chk_edge,
-            self.chk_gray,
-            self.chk_orb,
-            self.chk_multiscale,
-        ]:
-            chk.setChecked(True)
+        template_map = {
+            self.chk_color: (
+                "use_color",
+                "Matches pixel-perfect BGR values. Best for static icons.",
+            ),
+            self.chk_lab: (
+                "use_lab",
+                "Matches based on Perceptual Lightness. Use for UI with shadows/glows.",
+            ),
+            self.chk_edge: (
+                "use_edge",
+                "Matches shapes/outlines only. High success for wireframe icons.",
+            ),
+            self.chk_gray: (
+                "use_gray",
+                "Ignores color data. Fastest processing speed.",
+            ),
+            self.chk_orb: (
+                "use_orb",
+                "Feature-based matching. Works even if icon is rotated or skewed.",
+            ),
+            self.chk_multiscale: (
+                "use_multiscale",
+                "Repeats search at different sizes. Use if icon scaling is unknown.",
+            ),
+        }
+
+        for chk, (attr, tip) in template_map.items():
+            chk.setChecked(getattr(d, attr))
+            chk.setToolTip(tip)
             template_v.addWidget(chk)
         sidebar_layout.addWidget(template_group)
 
         # --- 2b. OCR PASSES ---
         ocr_group = QGroupBox("OCR Passes")
         ocr_v = QVBoxLayout(ocr_group)
+
         self.chk_ocr = QCheckBox("Enable OCR Engine")
         self.chk_adaptive = QCheckBox("Adaptive Threshold")
         self.chk_sharpen = QCheckBox("OCR Sharpening")
@@ -350,24 +419,35 @@ class GroundingLab(QMainWindow):
         self.chk_iso = QCheckBox("RGB Isolation")
         self.chk_fusion = QCheckBox("Heuristic Fusion")
 
-        for chk in [
-            self.chk_ocr,
-            self.chk_adaptive,
-            self.chk_sharpen,
-            self.chk_upscale,
-            self.chk_iso,
-            self.chk_fusion,
-        ]:
-            chk.setChecked(True)
+        ocr_map = {
+            self.chk_ocr: ("use_ocr", "Global toggle for the Tesseract Engine."),
+            self.chk_adaptive: (
+                "use_adaptive",
+                "Dynamic binarization. Essential for text on complex backgrounds.",
+            ),
+            self.chk_sharpen: (
+                "use_sharpen",
+                "Applies Unsharp Masking to improve character legibility.",
+            ),
+            self.chk_upscale: (
+                "use_upscale",
+                "Resamples small text to 2x size before OCR to increase accuracy.",
+            ),
+            self.chk_iso: (
+                "use_iso",
+                "Isolates specific color channels to eliminate background noise.",
+            ),
+            self.chk_fusion: (
+                "use_fusion",
+                "Combines multiple results using fuzzy logic to pick the best match.",
+            ),
+        }
+
+        for chk, (attr, tip) in ocr_map.items():
+            chk.setChecked(getattr(d, attr, True))
+            chk.setToolTip(tip)
             ocr_v.addWidget(chk)
         sidebar_layout.addWidget(ocr_group)
-
-        # --- CONNECT INPUT EVENTS ---
-        self.btn_ss.clicked.connect(lambda: self.get_file("ss"))
-        self.btn_icon.clicked.connect(
-            lambda: [self.get_file("icon"), self.update_toggle_states()],
-        )
-        self.query_input.textChanged.connect(lambda _: self.update_toggle_states())
 
         # --- 3. SYSTEM CONFIG ---
         sys_group = QGroupBox("Engine Config")
@@ -375,10 +455,22 @@ class GroundingLab(QMainWindow):
         self.tess_path = QLineEdit(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         self.threshold = QDoubleSpinBox()
         self.threshold.setRange(0.01, 1.0)
-        self.threshold.setValue(0.80)
+        self.threshold.setValue(0.70)
+        self.threshold.setToolTip(
+            "Minimum confidence score (0.0 - 1.0) to accept a match.",
+        )
         self.num_cores = QSpinBox()
         self.num_cores.setRange(1, 32)
         self.num_cores.setValue(8)
+        self.num_cores.setToolTip(
+            "Number of CPU threads for parallel template processing.",
+        )
+        self.psm_input = QSpinBox()
+        self.psm_input.setRange(0, 13)
+        self.psm_input.setValue(11)
+        self.psm_input.setToolTip(
+            "Tesseract Page Segmentation Mode. 11 = Sparse text, 3 = Fully automatic.",
+        )
         self.min_icon_width = QSpinBox()
         self.min_icon_width.setRange(10, 500)
         self.min_icon_width.setValue(30)
@@ -394,6 +486,7 @@ class GroundingLab(QMainWindow):
         sys_f.addRow("TESS PATH", self.tess_path)
         sys_f.addRow("CONFIDENCE", self.threshold)
         sys_f.addRow("THREADS", self.num_cores)
+        sys_f.addRow("PSM MODE", self.psm_input)
         sys_f.addRow("ICON SIZE", icon_size_layout)
         sidebar_layout.addWidget(sys_group)
 
@@ -443,12 +536,38 @@ class GroundingLab(QMainWindow):
         viewport.addWidget(self.console, 2)
         main_layout.addLayout(viewport)
         main_layout.setStretch(1, 4)
+        self.refresh_windows()
 
         # --- CONNECT ACTION BUTTONS ---
         self.btn_run.clicked.connect(self.run_engine)
         self.btn_cancel.clicked.connect(self.cancel_engine)
         self.btn_copy.clicked.connect(self.copy_best)
         self.btn_dump.clicked.connect(self.dump_logs)
+
+    def select_icon(self) -> None:
+        """Open a file dialog to select a template icon image."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Template Icon",
+            "",
+            "Images (*.png *.jpg *.bmp *.jpeg)",
+        )
+        if path:
+            self.icon_path = path
+            self.btn_icon.setText(f"ICON: {Path(path).name}")
+            self.update_toggle_states()
+
+    def refresh_windows(self) -> None:
+        """Populate the window selector with titles of all active desktop windows."""
+        self.window_selector.clear()
+        self.window_selector.addItem("Desktop")
+
+        titles = [w.title for w in gw.getAllWindows() if w.title.strip()]
+        self.window_selector.addItems(sorted(titles))
+
+        # Ensure "Desktop" is selected by default
+        self.window_selector.setCurrentIndex(0)
+        self.log(f"Detected {len(titles)} active windows. Default: Desktop")
 
     def log(self, m: str, lvl: str = "INFO") -> None:
         """Append a styled HTML message to the system console."""
@@ -478,42 +597,23 @@ class GroundingLab(QMainWindow):
         if vbar:
             vbar.setValue(vbar.maximum())
 
-    def get_file(self, mode: str) -> None:
-        """Open a file dialog to select input screenshots or icons."""
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Image",
-            "",
-            "Images (*.png *.jpg *.jpeg *.bmp)",
-        )
-        if path:
-            if mode == "ss":
-                self.img_path = path
-                self.btn_ss.setText(f"✓ {Path(path).name}")
-                frame = cv2.imread(path)
-                if frame is not None:
-                    self.update_view(frame)
-            else:
-                self.icon_path = path
-                self.btn_icon.setText(f"✓ {Path(path).name}")
-
     def update_toggle_states(self) -> None:
         """Update UI elements based on whether icon or text input is present."""
         icon_selected = bool(self.icon_path)
         text_entered = bool(self.query_input.text().strip())
 
         # --- TEMPLATE PASS CHECKBOXES ---
-        template_checkboxes = [
+        for chk in [
             self.chk_color,
             self.chk_lab,
             self.chk_edge,
             self.chk_gray,
             self.chk_orb,
             self.chk_multiscale,
-        ]
-        for chk in template_checkboxes:
+        ]:
             chk.setEnabled(icon_selected)
-            chk.setToolTip("" if icon_selected else "Select an icon first")
+            if not icon_selected:
+                chk.setToolTip("DISABLED: Select an icon first")
 
         # --- OCR PASS CHECKBOXES ---
         ocr_checkboxes = [
@@ -537,54 +637,57 @@ class GroundingLab(QMainWindow):
         )
 
     def reset_state(self) -> None:
-        """Reset the entire UI to its initial state."""
+        """Reset the entire UI to its initial state using GroundingConfig defaults."""
+        # Create a reference for default values
+        d = GroundingConfig()
+
         # Clear file paths
-        self.img_path = None
         self.icon_path = None
 
         # Reset buttons
-        self.btn_ss.setText("SELECT SCREENSHOT")
         self.btn_icon.setText("SELECT ICON")
 
         # Clear text input
         self.query_input.clear()
 
-        # Reset checkboxes
-        for chk in [
-            self.chk_color,
-            self.chk_lab,
-            self.chk_edge,
-            self.chk_gray,
-            self.chk_orb,
-            self.chk_multiscale,
-            self.chk_ocr,
-            self.chk_adaptive,
-            self.chk_sharpen,
-            self.chk_upscale,
-            self.chk_iso,
-            self.chk_fusion,
-        ]:
-            chk.setChecked(True)
+        # Reset checkboxes based on GroundingConfig defaults
+        self.chk_color.setChecked(d.use_color)
+        self.chk_lab.setChecked(d.use_lab)
+        self.chk_edge.setChecked(d.use_edge)
+        self.chk_gray.setChecked(d.use_gray)
+        self.chk_orb.setChecked(d.use_orb)
+        self.chk_multiscale.setChecked(d.use_multiscale)
+        self.chk_ocr.setChecked(d.use_ocr)
+        self.chk_adaptive.setChecked(d.use_adaptive)
 
-        # Reset engine config
-        self.threshold.setValue(0.80)
-        self.num_cores.setValue(8)
+        # Note: If these aren't in your dataclass yet, they will use True
+        self.chk_sharpen.setChecked(getattr(d, "use_sharpen", True))
+        self.chk_upscale.setChecked(getattr(d, "use_upscale", True))
+        self.chk_iso.setChecked(getattr(d, "use_iso", True))
+        self.chk_fusion.setChecked(getattr(d, "use_fusion", True))
+
+        # Reset engine config from dataclass defaults
+        self.threshold.setValue(d.threshold)
+        self.psm_input.setValue(d.psm)
+        self.num_cores.setValue(d.num_cores)
+        self.min_icon_width.setValue(d.min_icon_width)
+        self.max_icon_width.setValue(d.max_icon_width)
 
         # Reset progress and cancel button
         self.progress_bar.setValue(0)
         self.btn_run.setEnabled(False)
         self.btn_run.setObjectName("action_btn_idle")
         self.btn_run.setText("START DIAGNOSTICS")
+        self.btn_run.setStyleSheet("")  # Clear any loading styles
         self.btn_cancel.hide()
 
         # Clear viewport
         self.display.set_frame(None)
         self.display.clear()
+        self.display.setText("SYSTEM IDLE")
 
-        # Clear console
+        # Clear console and results
         self.console.clear()
-
-        # Clear last results
         self.last_results = []
 
         # Update toggle states (to correctly disable checkboxes)
@@ -592,8 +695,9 @@ class GroundingLab(QMainWindow):
 
     def run_engine(self) -> None:
         """Start the grounding engine diagnostics in a background thread."""
-        if not self.img_path:
-            return self.log("Reference screenshot required!", "ERROR")
+        target_window = self.window_selector.currentText()
+        if not target_window:
+            return self.log("Reference target window required!", "ERROR")
 
         self.btn_run.setEnabled(False)
         self.btn_run.setObjectName("action_btn_loading")
@@ -602,26 +706,27 @@ class GroundingLab(QMainWindow):
         self.btn_cancel.show()
         self.progress_bar.setValue(0)
 
-        engine = DesktopGroundingEngine(self.tess_path.text())
-        config = {
-            t: getattr(self, f"chk_{t.split('_')[1]}").isChecked()
-            for t in [
-                "use_color",
-                "use_lab",
-                "use_edge",
-                "use_gray",
-                "use_orb",
-                "use_multiscale",
-                "use_adaptive",
-                "use_ocr",
-            ]
-        }
-        config["num_cores"] = self.num_cores.value()
+        engine = CVGroundingEngine(self.tess_path.text())
+        config = GroundingConfig(
+            use_color=self.chk_color.isChecked(),
+            use_lab=self.chk_lab.isChecked(),
+            use_edge=self.chk_edge.isChecked(),
+            use_gray=self.chk_gray.isChecked(),
+            use_orb=self.chk_orb.isChecked(),
+            use_multiscale=self.chk_multiscale.isChecked(),
+            use_ocr=self.chk_ocr.isChecked(),
+            use_adaptive=self.chk_adaptive.isChecked(),
+            num_cores=self.num_cores.value(),
+            threshold=self.threshold.value(),
+            psm=self.psm_input.value(),
+            min_icon_width=self.min_icon_width.value(),
+            max_icon_width=self.max_icon_width.value(),
+        )
 
         self.worker = Worker(
             engine,
             config,
-            Path(self.img_path),
+            target_window,
             Path(self.icon_path) if self.icon_path else None,
             self.query_input.text(),
             self.threshold.value(),
@@ -631,7 +736,6 @@ class GroundingLab(QMainWindow):
         self.worker.progress_signal.connect(self.progress_bar.setValue)
         self.worker.finished.connect(self.on_finished)
         self.worker.start()
-
         return None
 
     def cancel_engine(self) -> None:
@@ -643,30 +747,52 @@ class GroundingLab(QMainWindow):
             self.btn_cancel.setText("STOPPING...")
 
     def update_view(self, frame: np.ndarray | None) -> None:
-        """Convert a BGR frame to RGB and update the display label."""
+        """Update display using in-memory frame with smooth scaling."""
         if frame is None:
             return
+
         self.display.set_frame(frame)
+
+        # Convert BGR to RGB
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qimg = QImage(rgb.data.tobytes(), w, h, ch * w, QImage.Format.Format_RGB888)
-        self.display.setPixmap(
-            QPixmap.fromImage(qimg).scaled(
-                self.display.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            ),
-        )
 
-    def on_finished(self, results: list, frame: cv2.Mat | None) -> None:
-        """Restore UI state and store detection results after thread completion."""
+        # Scale to fit view while keeping aspect ratio
+        pixmap = QPixmap.fromImage(qimg).scaled(
+            self.display.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.display.setPixmap(pixmap)
+
+    def on_finished(self, results: list[Candidate], frame: np.ndarray | None) -> None:
+        """Restore UI state and display the engine's internal debug view instead of manually drawing annotations."""
         self.btn_run.setEnabled(True)
         self.btn_run.setObjectName("action_btn_idle")
         self.btn_run.setText("START DIAGNOSTICS")
         self.btn_cancel.hide()
         self.last_results = results
-        if frame is not None:
-            self.update_view(frame)
+
+        # Determine which frame to display as the final view
+        final_view = frame
+
+        # If the engine has a specific debug frame (the 'last_debug'), use that.
+        # This shows the binary/edge/filtered image the engine actually 'saw'.
+        if (
+            self.worker
+            and hasattr(self.worker.engine, "last_debug_frame")
+            and self.worker.engine.last_debug_frame is not None
+        ):
+            final_view = self.worker.engine.last_debug_frame
+
+        if final_view is not None:
+            self.update_view(final_view)
+
+        if results:
+            self.log(f"Detection complete. Found {len(results)} candidates.", "SUCCESS")
+        else:
+            self.log("Detection complete. No matches found.", "WARNING")
 
     def copy_best(self) -> None:
         """Copy the coordinates of the highest-ranking candidate to the clipboard."""

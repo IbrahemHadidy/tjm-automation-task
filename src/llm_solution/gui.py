@@ -2,21 +2,20 @@
 
 import os
 import sys
-from pathlib import Path
 
 import pygetwindow as gw
-from PyQt6.QtCore import QEvent, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import (
+from PIL import ImageQt
+from PySide6.QtCore import QEvent, Qt, QThread, Signal
+from PySide6.QtGui import (
     QColor,
     QCursor,
-    QFont,
     QMouseEvent,
     QPainter,
     QPaintEvent,
     QPen,
     QPixmap,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
@@ -36,7 +35,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from llm_solution.grounding_engine import AiGroundingEngine, UIElementNode
+from llm_solution.engine import AiGroundingEngine, UIElementNode
 
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
 os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "PassThrough"
@@ -53,9 +52,9 @@ ERROR = "#FF3131"
 class AIWorker(QThread):
     """Resolve AI coordinates in a background thread."""
 
-    log_signal = pyqtSignal(str, str)
-    result_signal = pyqtSignal(list)
-    finished_signal = pyqtSignal()
+    log_signal = Signal(str, str)
+    result_signal = Signal(list)
+    finished_signal = Signal()
 
     def __init__(
         self,
@@ -157,7 +156,7 @@ class MagnifierLabel(QLabel):
         super().leaveEvent(event)
 
     def paintEvent(self, _event: QPaintEvent) -> None:
-        """Perform custom rendering of the image and the magnifier loupe."""
+        """Render the pre-annotated debug image and the interactive magnifier."""
         if self.full_res_frame is None:
             return
 
@@ -165,42 +164,31 @@ class MagnifierLabel(QLabel):
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # 1. Scale image to fit the label while maintaining aspect ratio
+        # 1. Coordinate Setup
         pw, ph = self.full_res_frame.width(), self.full_res_frame.height()
         sw, sh = self.width(), self.height()
         scale = min(sw / pw, sh / ph)
+        dx, dy = (sw - int(pw * scale)) // 2, (sh - int(ph * scale)) // 2
 
-        view_w, view_h = int(pw * scale), int(ph * scale)
-        dx = (sw - view_w) // 2
-        dy = (sh - view_h) // 2
+        # 2. Draw Background
+        painter.drawPixmap(
+            dx,
+            dy,
+            int(pw * scale),
+            int(ph * scale),
+            self.full_res_frame,
+        )
 
-        # 2. Draw the background image
-        painter.drawPixmap(dx, dy, view_w, view_h, self.full_res_frame)
-
-        # 3. Draw Crosshairs
-        pen = QPen(QColor(SUCCESS), 2)
-        painter.setPen(pen)
-        for node in self.crosshairs:
-            coords = node.get("coords", [0, 0])
-            rx, ry = coords[0], coords[1]
-            px = int(rx * scale) + dx
-            py = int(ry * scale) + dy
-            painter.drawLine(px - 10, py, px + 10, py)
-            painter.drawLine(px, py - 10, px, py + 10)
-
-        # 4. Magnifier Logic
+        # 3. Magnifier Logic
         cursor_pos = self.mapFromGlobal(QCursor.pos())
         if self.underMouse():
-            # Convert widget coordinates to source image coordinates
             img_x = int((cursor_pos.x() - dx) / scale)
             img_y = int((cursor_pos.y() - dy) / scale)
 
             if 0 <= img_x < pw and 0 <= img_y < ph:
                 cw = int(self.mag_size / self.zoom)
-                # Crop area from the original high-res image
                 crop_x = max(0, min(img_x - cw // 2, pw - cw))
                 crop_y = max(0, min(img_y - cw // 2, ph - cw))
-
                 cropped = self.full_res_frame.copy(crop_x, crop_y, cw, cw)
                 zoomed = cropped.scaled(
                     self.mag_size,
@@ -209,21 +197,27 @@ class MagnifierLabel(QLabel):
                     Qt.TransformationMode.SmoothTransformation,
                 )
 
-                # Offset the loupe so it's not directly under the cursor
-                tx = cursor_pos.x() + 25
-                ty = cursor_pos.y() + 25
-
-                # Flip position if it goes off screen
+                # Determine Loupe Position (Avoid edges)
+                tx, ty = cursor_pos.x() + 25, cursor_pos.y() + 25
                 if tx + self.mag_size > sw:
                     tx = cursor_pos.x() - self.mag_size - 25
                 if ty + self.mag_size > sh:
                     ty = cursor_pos.y() - self.mag_size - 25
 
+                # Draw the zoomed-in portion (with burned-in annotations)
                 painter.drawPixmap(tx, ty, zoomed)
+
+                # 4. Loupe Cosmetics
+                # Border
                 painter.setPen(QPen(QColor(ACCENT), 2))
                 painter.drawRect(tx, ty, self.mag_size, self.mag_size)
-                painter.setPen(QColor("white"))
-                painter.drawText(tx + 5, ty + 15, f"IMAGE: {img_x}, {img_y}")
+
+                # Coordinates Text with Shadow for visibility
+                text = f"IMG: {img_x}, {img_y}"
+                painter.setPen(QColor(0, 0, 0))  # Shadow
+                painter.drawText(tx + 6, ty + 16, text)
+                painter.setPen(QColor("white"))  # Actual Text
+                painter.drawText(tx + 5, ty + 15, text)
 
         painter.end()
 
@@ -410,7 +404,7 @@ class GroundingLab(QMainWindow):
         current_selection = self.window_selector.currentText()
         titles = [w.title for w in gw.getAllWindows() if w.title.strip()]
         self.window_selector.clear()
-        items = ["Entire Desktop", *sorted(set(titles))]
+        items = ["Desktop", *sorted(set(titles))]
         self.window_selector.addItems(items)
         if current_selection in items:
             self.window_selector.setCurrentText(current_selection)
@@ -472,61 +466,35 @@ class GroundingLab(QMainWindow):
     # Result Handling
     # --------------------------
     def process_results(self, results: list[UIElementNode]) -> None:
-        """Visualize AI coordinates using bounding boxes instead of crosshairs."""
-        self.log_message(f"Mapped {len(results)} targets.", "SUCCESS")
-        self.results_table.setRowCount(0)
-        self.node_data = results.copy()
+        """Update display using the pre-rendered DEBUG image from the engine."""
+        display_image = getattr(self.engine, "last_debug_image", None)
 
-        vision_path = Path("ai_vision_input.png")
-        if not vision_path.exists():
-            self.log_message("Visual capture file missing.", "ERROR")
+        if display_image is None:
+            self.log_message("Visualization failed: No debug image found.", "ERROR")
             return
 
-        pixmap = QPixmap(str(vision_path))
-        painter = QPainter(pixmap)
-        pen = QPen(QColor(SUCCESS))
-        pen.setWidth(3)
-        painter.setPen(pen)
-        font = QFont("Consolas", 12)
-        font.setWeight(QFont.Weight.Bold)
-        painter.setFont(font)
+        # Convert the annotated PIL image to QPixmap
+        q_img = ImageQt.ImageQt(display_image.convert("RGBA"))
+        pixmap = QPixmap.fromImage(q_img)
 
+        self.viewport.set_frame(pixmap)
+        self._update_results_table(results)
+
+    def _update_results_table(self, results: list[UIElementNode]) -> None:
+        """Refresh the UI table with raw data."""
+        self.results_table.setRowCount(0)
         for i, node in enumerate(results):
             px, py = node["coords"]
-            score = node["score"]
-            area = node["area"]
-            neighbors = ", ".join(node["neighbors"])
-            rank = node["rank"]
-            width, height = node["size"] or (20, 20)
-
-            # Draw bounding box centered on coords
-            painter.drawRect(px - width // 2, py - height // 2, width, height)
-
-            # Draw rank/label near box
-            painter.drawText(
-                px + width // 2 + 5,
-                py + height // 2 + 5,
-                f"Rank:{rank}",
-            )
-
-            # Update results table
             self.results_table.insertRow(i)
             self.results_table.setItem(i, 0, QTableWidgetItem(f"{px}, {py}"))
-            self.results_table.setItem(i, 1, QTableWidgetItem(f"{score:.2f}"))
-            self.results_table.setItem(i, 2, QTableWidgetItem(area))
-            self.results_table.setItem(i, 3, QTableWidgetItem(neighbors))
-            self.results_table.setItem(i, 4, QTableWidgetItem(str(rank)))
-
-            # Log for reasoning/debugging
-            self.log_message(
-                f"Node {i + 1}: {area} | Neighbors: {neighbors} | Score: {score:.2f} | Rank: {rank}",
+            self.results_table.setItem(i, 1, QTableWidgetItem(f"{node['score']:.2f}"))
+            self.results_table.setItem(i, 2, QTableWidgetItem(node["area"]))
+            self.results_table.setItem(
+                i,
+                3,
+                QTableWidgetItem(", ".join(node["neighbors"])),
             )
-
-        painter.end()
-
-        # Update magnifier overlay
-        self.viewport.set_frame(pixmap)
-        self.viewport.update_crosshairs(self.node_data)
+            self.results_table.setItem(i, 4, QTableWidgetItem(str(node["rank"])))
 
     # --------------------------
     # Reference Image
@@ -558,8 +526,7 @@ class GroundingLab(QMainWindow):
     # Close Event
     # --------------------------
     def closeEvent(self, event: QEvent) -> None:
-        """Clean up temporary AI artifacts when closing the lab."""
-        self.engine.cleanup()
+        """Clean up resources when closing the lab."""
         event.accept()
 
 

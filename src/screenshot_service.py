@@ -1,67 +1,75 @@
-"""Service for capturing desktop and application screenshots with state restoration."""
+"""Provide surgical application and desktop screen capture services.
+
+Manage the desktop state to ensure that AI and Computer Vision grounding
+engines receive clean, uncluttered visual input without background noise.
+"""
 
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
 
 import pyautogui
 import pygetwindow as gw
 from PIL import Image
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 class ScreenshotService:
-    """Handle desktop and app capture with surgical state management."""
+    """Manage desktop and app capture with surgical state management."""
 
     def __init__(self, settle_delay: float = 1.0) -> None:
-        """Initialize service with settle delay."""
+        """Initialize the service with a custom settle delay.
+
+        Args:
+            settle_delay: Wait time in seconds for UI animations to finish.
+
+        """
         self._settle_delay = settle_delay
 
-    def capture_desktop(self, output_path: Path) -> Path:
-        """Capture the full desktop after clearing the workspace.
+    def capture_desktop(self) -> Image.Image:
+        """Capture the full desktop after minimizing all active windows.
 
-        Workflow:
-            1. Minimize all windows via Win+D.
-            2. Clear mouse hovers by clicking the corner.
-            3. Capture and save full screen.
-            4. Restore original window state.
+        Returns:
+            The PIL Image object of the cleared desktop screenshot.
+
         """
         self.log("[PROCESS] Clearing workspace for desktop capture.")
         self._toggle_desktop()
 
         try:
+            # Allow time for 'Minimize All' animations to complete
             time.sleep(self._settle_delay)
+
+            # Move mouse to corner to avoid hovering over UI elements/tooltips
             pyautogui.click(1, 1)
-            image = pyautogui.screenshot()
-            image.save(output_path)
+
+            # Return the screenshot as a PIL Image object
+            return pyautogui.screenshot()
+
         finally:
+            # Restore the windows to their original state
             self._toggle_desktop()
             time.sleep(0.5)
-
-        return output_path
 
     def capture_app_window(
         self,
         window_title: str,
-        output_path: Path,
-    ) -> tuple[Path, tuple[int, int, int, int]]:
-        """Isolate a specific application window against a blanked-out background.
+    ) -> tuple[Image.Image, tuple[int, int, int, int]]:
+        """Isolate a specific application window against a blacked-out background.
 
-        This method ensures the AI sees only the target application by masking the
-        background and taskbar with a solid black fill.
+        Mask the background and taskbar with a solid black fill in-memory to
+        ensure the grounding engine sees only the target application.
 
-        Workflow:
-            1. State Snapshot: Record current visibility of all open windows.
-            2. Clear Stage: Minimize all windows to prevent background overlap.
-            3. Target Isolation: Restore and focus only the target window.
-            4. Capture & Mask: Capture full screen, then black out all pixels
-               outside the target window's bounds (including the taskbar).
-            5. Restoration: Return all windows to their original positions/states.
+        Args:
+            window_title: The title of the window to isolate.
+
+        Returns:
+            A tuple containing the masked PIL Image and the (x, y, w, h) bounds.
+
+        Raises:
+            ValueError: If no window with the specified title is found.
+
         """
-        # 1. State Snapshot
+        # 1. Snapshot the current visibility and state of all open windows
         all_wins = gw.getAllWindows()
         window_snapshot = [
             {"win": w, "was_max": w.isMaximized, "was_min": w.isMinimized}
@@ -70,11 +78,11 @@ class ScreenshotService:
         ]
 
         try:
-            # 2. Clear Stage
+            # 2. Minimize everything to prevent background noise
             self._toggle_desktop()
             time.sleep(0.5)
 
-            # 3. Target Isolation
+            # 3. Locate and focus the target application
             windows = gw.getWindowsWithTitle(window_title)
             if not windows:
                 msg = f"Window not found: {window_title}"
@@ -85,45 +93,52 @@ class ScreenshotService:
             target_win.activate()
             time.sleep(self._settle_delay)
 
-            # 4. Capture & Mask
+            # 4. Perform the surgical crop and mask
             full_ss = pyautogui.screenshot()
 
-            # Create the "Blank Background" mask
-            mask = Image.new("RGB", full_ss.size, (0, 0, 0))  # Solid Black
-            rect = (
+            mask = Image.new("RGB", full_ss.size, (0, 0, 0))
+
+            # Calculate coordinates for the crop (left, top, right, bottom)
+            crop_rect = (
                 target_win.left,
                 target_win.top,
                 target_win.left + target_win.width,
                 target_win.top + target_win.height,
             )
 
-            # Paste the app pixels onto the black background
-            app_region = full_ss.crop(rect)
+            # Extract the app region and paste it onto the black canvas
+            app_region = full_ss.crop(crop_rect)
             mask.paste(app_region, (target_win.left, target_win.top))
-            mask.save(output_path)
+
+            # Store metadata for the grounding engine: (x, y, w, h)
+            rect = (
+                target_win.left,
+                target_win.top,
+                target_win.width,
+                target_win.height,
+            )
+
+            return mask, rect
 
         finally:
-            # 5. Surgical Restoration
+            # 5. Restore original window environment in reverse Z-order
             self.log("[PROCESS] Restoring original window environment.")
             for item in reversed(window_snapshot):
                 win = item["win"]
-                if item["was_max"]:
-                    win.maximize()
-                elif not item["was_min"]:
-                    win.restore()
+                try:
+                    if item["was_max"]:
+                        win.maximize()
+                    elif not item["was_min"]:
+                        win.restore()
+                except Exception as e:
+                    self.log(f"[WARN] Could not restore window '{win.title}': {e}")
+                    continue
             time.sleep(0.5)
 
-        return output_path, (
-            target_win.left,
-            target_win.top,
-            target_win.width,
-            target_win.height,
-        )
-
     def _toggle_desktop(self) -> None:
-        """Toggle Windows 'Show Desktop' (Win+D)."""
+        """Toggle the Windows 'Show Desktop' state via Hotkey."""
         pyautogui.hotkey("win", "d")
 
     def log(self, msg: str) -> None:
-        """Log the service message."""
+        """Log service status to the console."""
         print(msg)
