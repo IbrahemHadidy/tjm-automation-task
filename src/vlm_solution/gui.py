@@ -34,8 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from llm_solution.engine import AiGroundingEngine, UIElementNode
+from vlm_solution.engine import AiGroundingEngine, UIElementNode
 
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
 os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "PassThrough"

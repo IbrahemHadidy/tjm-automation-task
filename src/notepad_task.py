@@ -72,7 +72,7 @@ class NotepadTask:
         """Initialize the task runner with grounding and safety features.
 
         Args:
-            strategy: The perception strategy (OpenCV/LLM) used to locate the app.
+            strategy: The perception strategy (OpenCV/VLM) used to locate the app.
 
         """
         self.strategy = strategy

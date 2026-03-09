@@ -1,6 +1,6 @@
 """Provide entry points for the TJM automation pipeline.
 
-Expose runnable automation workflows including LLM-based, CV-based,
+Expose runnable automation workflows including VLM-based, CV-based,
 and hybrid perception strategies.
 """
 
@@ -8,14 +8,14 @@ from notepad_task import NotepadTask
 from strategies import (
     CVStrategy,
     HybridCVFirstStrategy,
-    HybridLLMFirstStrategy,
-    LLMStrategy,
+    HybridVLMFirstStrategy,
+    VLMStrategy,
 )
 
 
-def run_llm() -> None:
-    """Execute the automation pipeline using LLM-based grounding."""
-    NotepadTask(LLMStrategy()).run()
+def run_vlm() -> None:
+    """Execute the automation pipeline using VLM-based grounding."""
+    NotepadTask(VLMStrategy()).run()
 
 
 def run_cv() -> None:
@@ -24,10 +24,10 @@ def run_cv() -> None:
 
 
 def run_hybrid_cv_first() -> None:
-    """Execute the pipeline with CV primary and LLM fallback."""
+    """Execute the pipeline with CV primary and VLM fallback."""
     NotepadTask(HybridCVFirstStrategy()).run()
 
 
-def run_hybrid_llm_first() -> None:
-    """Execute the pipeline with LLM primary and CV fallback."""
-    NotepadTask(HybridLLMFirstStrategy()).run()
+def run_hybrid_vlm_first() -> None:
+    """Execute the pipeline with VLM primary and CV fallback."""
+    NotepadTask(HybridVLMFirstStrategy()).run()

@@ -1,4 +1,4 @@
-"""Data models and type definitions for the LLM grounding solution."""
+"""Data models and type definitions for the VLM grounding solution."""
 
 from typing import TypedDict
 

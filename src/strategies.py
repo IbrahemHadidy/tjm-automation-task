@@ -1,7 +1,7 @@
 """Provide grounding and UI automation strategies for application launching.
 
 Define the contract for launching applications using different perception
-engines (LLM or CV). Include visual artifact logging and hardware
+engines (VLM or CV). Include visual artifact logging and hardware
 input safety locks to prevent user interference during critical actions.
 """
 
@@ -17,10 +17,10 @@ import cv2
 import numpy as np
 import pyautogui
 import pygetwindow as gw
+from vlm_solution.engine import AiGroundingEngine
+from vlm_solution.utils import AiImageUtils
 
 from cv_solution.engine import CVGroundingEngine
-from llm_solution.engine import AiGroundingEngine
-from llm_solution.utils import AiImageUtils
 
 if TYPE_CHECKING:
     from cv2.typing import MatLike
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # Configuration Constants
 ICON_PATH = Path("notepad_icon.png")
 TESS_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-LLM_INSTRUCTION = "Notepad shortcut"
+VLM_INSTRUCTION = "Notepad shortcut"
 OPENCV_TEXT_QUERY = "Notepad"
 
 # =========================================================
@@ -118,8 +118,8 @@ class LaunchStrategy(ABC):
         """Retrieve the visual perception map from the last launch attempt."""
 
 
-class LLMStrategy(LaunchStrategy):
-    """Ground applications using Multi-modal LLM reasoning."""
+class VLMStrategy(LaunchStrategy):
+    """Ground applications using Multi-modal VLM reasoning."""
 
     def __init__(self, debug_dir: str = "logs/ai_debug") -> None:
         """Initialize the AI grounding engine with a specific debug path."""
@@ -137,12 +137,12 @@ class LLMStrategy(LaunchStrategy):
         try:
             # 1. Request AI Predictions
             results = self.engine.resolve_coordinates(
-                instruction=LLM_INSTRUCTION,
+                instruction=VLM_INSTRUCTION,
                 target_window="Desktop",
             )
 
             if not results:
-                print("[LLM Strategy] AI found no valid targets.")
+                print("[VLM Strategy] AI found no valid targets.")
                 return False
 
             # 2. Sort by confidence scores
@@ -170,7 +170,7 @@ class LLMStrategy(LaunchStrategy):
             )
 
         except Exception as e:
-            print(f"[LLM Strategy] Critical Error: {e}")
+            print(f"[VLM Strategy] Critical Error: {e}")
             return False
 
     def get_debug_frame(self) -> MatLike | None:
@@ -216,23 +216,23 @@ class CVStrategy(LaunchStrategy):
 
 
 class HybridCVFirstStrategy(LaunchStrategy):
-    """Attempt grounding via CV first, falling back to LLM on failure."""
+    """Attempt grounding via CV first, falling back to VLM on failure."""
 
     def __init__(self) -> None:
-        """Initialize both CV and LLM perception engines."""
+        """Initialize both CV and VLM perception engines."""
         self.cv = CVStrategy()
-        self.llm = LLMStrategy()
+        self.vlm = VLMStrategy()
         self._last_used_strategy: LaunchStrategy | None = None
 
     def launch(self) -> bool:
-        """Execute CV launch and fallback to LLM if unsuccessful."""
+        """Execute CV launch and fallback to VLM if unsuccessful."""
         self._last_used_strategy = self.cv
         if self.cv.launch():
             return True
 
-        print("[HYBRID] CV failed. Triggering LLM fallback...")
-        self._last_used_strategy = self.llm
-        return self.llm.launch()
+        print("[HYBRID] CV failed. Triggering VLM fallback...")
+        self._last_used_strategy = self.vlm
+        return self.vlm.launch()
 
     def get_debug_frame(self) -> MatLike | None:
         """Retrieve the debug frame from the most recently attempted strategy."""
@@ -243,22 +243,22 @@ class HybridCVFirstStrategy(LaunchStrategy):
         )
 
 
-class HybridLLMFirstStrategy(LaunchStrategy):
-    """Attempt grounding via LLM first, falling back to CV on failure."""
+class HybridVLMFirstStrategy(LaunchStrategy):
+    """Attempt grounding via VLM first, falling back to CV on failure."""
 
     def __init__(self) -> None:
-        """Initialize both LLM and CV perception engines."""
-        self.llm = LLMStrategy()
+        """Initialize both VLM and CV perception engines."""
+        self.vlm = VLMStrategy()
         self.cv = CVStrategy()
         self._last_used_strategy: LaunchStrategy | None = None
 
     def launch(self) -> bool:
-        """Execute LLM launch and fallback to CV if unsuccessful."""
-        self._last_used_strategy = self.llm
-        if self.llm.launch():
+        """Execute VLM launch and fallback to CV if unsuccessful."""
+        self._last_used_strategy = self.vlm
+        if self.vlm.launch():
             return True
 
-        print("[HYBRID] LLM failed. Triggering CV fallback...")
+        print("[HYBRID] VLM failed. Triggering CV fallback...")
         self._last_used_strategy = self.cv
         return self.cv.launch()
 

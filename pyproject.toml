@@ -21,18 +21,18 @@ dev = ["pre-commit>=4.5.0", "pyright>=1.1.407", "ruff>=0.14.9"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ['cv_solution', 'llm_solution']
+packages = ['cv_solution', 'vlm_solution']
 
 [tool.uv]
 package = true
 
 [project.scripts]
-start-llm = "llm_solution.gui:run"
+start-vlm = "vlm_solution.gui:run"
 start-cv = "cv_solution.gui:run"
-notepad-llm = "main:run_llm"
+notepad-vlm = "main:run_vlm"
 notepad-cv = "main:run_cv"
 notepad-cv-first = "main:run_hybrid_cv_first"
-notepad-llm-first = "main:run_hybrid_llm_first"
+notepad-vlm-first = "main:run_hybrid_vlm_first"
 
 [tool.pyright]
 typeCheckingMode = "basic"

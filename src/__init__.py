@@ -1,7 +1,7 @@
 """TJM Automation Framework.
 
 A production-grade automation pipeline utilizing dual-mode perception
-(LLM & Computer Vision) to orchestrate desktop applications.
+(VLM & Computer Vision) to orchestrate desktop applications.
 
 Core Components:
     - NotepadTask: The FSM controller for the automation lifecycle.
@@ -10,15 +10,15 @@ Core Components:
     - RunMonitor: Telemetry and artifact management.
 
 Usage:
-    >>> from src import run_llm
-    >>> run_llm()
+    >>> from src import run_vlm
+    >>> run_vlm()
 """
 
-from .main import run_hybrid_llm_first, run_hybrid_opencv_first, run_llm, run_opencv
+from .main import run_hybrid_opencv_first, run_hybrid_vlm_first, run_opencv, run_vlm
 
 __all__ = [
-    "run_hybrid_llm_first",
     "run_hybrid_opencv_first",
-    "run_llm",
+    "run_hybrid_vlm_first",
     "run_opencv",
+    "run_vlm",
 ]

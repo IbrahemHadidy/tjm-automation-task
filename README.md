@@ -1,79 +1,183 @@
 # Vision‑Based Desktop Automation — Notepad Workflow
 
-> Technical overview of a Notepad automation project demonstrating both AI and CV grounding, screenshot management, task orchestration, and robustness measures.
+> Technical overview of a desktop automation system that locates the Notepad icon using computer vision or a vision-language model (VLM), launches the application, and programmatically saves fetched content.
+
+---
+
+## Authorship & Tooling Note
+
+I implemented the automation architecture, grounding pipelines, FSM orchestration, and robustness features. The included PySide6 diagnostic GUIs were implemented from the specifications and workflows I designed; an AI assistant generated the GUI code and I validated and debugged it.
+
+These GUIs are development utilities for visualization and tuning and are not required to run the core automation workflow.
+
+---
+
+## Core Solution Overview
+
+The primary objective is to reliably locate and interact with a desktop icon (Notepad) using vision-based methods (OpenCV and a vision-language model), even when the icon position changes.
+
+The core workflow is as follows:
+
+1. **Fetch the first 10 posts from the JSONPlaceholder API** before launching Notepad to separate network I/O from UI automation and improve efficiency.
+2. Capture a screenshot of the desktop.
+3. Detect the Notepad icon using computer vision grounding.
+4. Return the center coordinates of the detected icon.
+5. Double-click the icon to launch Notepad.
+6. Verify that Notepad successfully opened.
+7. Insert each post into Notepad and save it as `post_{id}.txt` in `Desktop/tjm-project`.
+
+To increase reliability, the system includes retry logic, window verification, and candidate ranking to handle detection failures or false positives.
+
+Additional tooling (diagnostic GUIs, hybrid grounding strategies, monitoring) was implemented to assist development and experimentation but is not required for the core automation workflow
+
+---
+
+## Project Goals
+
+This project was designed to explore three main ideas:
+
+- **Robust visual grounding** for desktop automation
+- **Reliability mechanisms** such as retries, verification loops, and candidate ranking
+- **Flexible perception strategies** combining traditional computer vision techniques and vision-language models (VLMs)
+
+While the example task targets Notepad, the design focuses on building grounding techniques that can generalize to other desktop UI automation tasks.
 
 ---
 
 ## Getting Started
 
-### 1. Environment Setup
+### Quick Run (Default: OpenCV)
 
-* **Desktop Shortcut:** Place a shortcut to **Notepad** on your primary desktop.
-* **Tesseract OCR:** Install [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) and note the installation path.
-* **Environment Variables:** Create a `.env` file in the root directory (use `example.env` as a template):
+Before running any demos, ensure your local environment is up-to-date and all packages are installed:
 
-  ```bash
-  GEMINI_API_KEY=your_google_api_key_here
-  API_URL=[https://jsonplaceholder.typicode.com/posts](https://jsonplaceholder.typicode.com/posts)
-  ```
+```bash
+uv sync
+```
 
----
+Run the core automation demo using the **OpenCV grounding engine**:
 
-## Execution Commands
+```bash
+uv run notepad-cv
+```
+
+### Run with the VLM Engine
+
+To run the same workflow using the **Vision-Language Model (VLM) engine**, ensure you have configured your `.env` file with a valid `GEMINI_API_KEY`, then run:
+
+```bash
+uv run notepad-vlm
+```
+
+### Hybrid Strategy (Optional)
+
+You can also test the **hybrid detection strategies**, where one engine acts as a fallback for the other:
+
+```bash
+uv run notepad-cv-first   # Try OpenCV first, fall back to VLM
+uv run notepad-vlm-first  # Try VLM first, fall back to OpenCV
+```
+
+### Execution Commands
 
 | Command                    | Action                                                   |
 |----------------------------|----------------------------------------------------------|
 | `uv sync`                  | Sync project dependencies and environment                |
-| `uv run start-llm`         | Launch the AI Vision Diagnostic Lab                      |
-| `uv run start-cv`          | Launch the OpenCV/OCR Diagnostic Lab                     |
+| `uv run start-vlm`         | Launch the Vision-Language Model Diagnostic Lab          |
+| `uv run start-cv`          | Launch the OpenCV/OCR Grounding Diagnostic Lab           |
 | `uv run notepad-cv`        | Run the standard Notepad automation using the CV engine  |
-| `uv run notepad-llm`       | Run the standard Notepad automation using the LLM engine |
-| `uv run notepad-cv-first`  | Attempt CV detection first, fall back to LLM if it fails |
-| `uv run notepad-llm-first` | Attempt LLM detection first, fall back to CV if it fails |
+| `uv run notepad-vlm`       | Run the standard Notepad automation using the VLM engine |
+| `uv run notepad-cv-first`  | Attempt CV detection first, fall back to VLM if it fails |
+| `uv run notepad-vlm-first` | Attempt VLM detection first, fall back to CV if it fails |
+
+---
+
+### Environment Setup
+
+- **Desktop Shortcut:** Place a shortcut to **Notepad** on your primary desktop.
+- **Tesseract OCR:** Install [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) and note the installation path.
+- **Environment Variables:** Create a `.env` file in the root directory (use `example.env` as a template):
+
+  ```bash
+  GEMINI_API_KEY=your_google_api_key_here
+  API_URL=https://jsonplaceholder.typicode.com/posts
+  ```
 
 ---
 
 ## Architecture & Repository Structure
 
-The project is organized into two primary grounding engines (LLM and OpenCV) and a shared core for automation, screenshot management, and state orchestration.
+The project is organized around two complementary grounding engines — an OpenCV-based perception pipeline and a vision-language model (VLM) — and a shared core for automation, screenshot management, and state orchestration.
 
 1. **ScreenshotService** [(`src/screenshot_service.py`)](src/screenshot_service.py) — Manage workspace state (minimize/restore) and capture high-DPI desktop/app states.
-2. **Grounding Engines** ([`src/llm_solution/engine.py`](src/llm_solution/engine.py), [`src/cv_solution/engine.py`](src/cv_solution/engine.py)) — Translate high-level intent into screen coordinates using either AI reasoning or traditional CV+OCR fusion.
+2. **Grounding Engines** ([`src/vlm_solution/engine.py`](src/vlm_solution/engine.py), [`src/cv_solution/engine.py`](src/cv_solution/engine.py)) — Translate high-level intent into screen coordinates using either AI reasoning or traditional CV+OCR fusion.
 3. **Automation Orchestration** ([`src/notepad_task.py`](src/notepad_task.py), [`src/strategies.py`](src/strategies.py)) — Drive the finite state machine for launching, typing, saving, and switching perception strategies.
-4. **Diagnostic Tooling** ([`src/llm_solution/gui.py`](src/llm_solution/gui.py), [`src/cv_solution/gui.py`](src/cv_solution/gui.py)) — Provide PySide-based interfaces for real-time detection debugging and coordinate verification.
+4. **Diagnostic Tooling** ([`src/vlm_solution/gui.py`](src/vlm_solution/gui.py), [`src/cv_solution/gui.py`](src/cv_solution/gui.py)) — Provide PySide-based interfaces for real-time detection debugging and coordinate verification.
+
+---
+
+## Architecture Summary
+
+The system is organized into three main components:
+
+### 1. Screenshot & Environment Handling
+
+- Captures desktop screenshots
+- Handles DPI awareness and coordinate normalization
+- Manages workspace state (minimize / restore windows)
+
+### 2. Grounding Engines
+
+Two independent detection strategies are implemented:
+
+- **OpenCV Grounding Engine** – template matching, feature detection, and OCR fusion
+- **VLM Grounding Engine** – semantic icon detection using a vision-language model
+
+The engines return ranked candidate coordinates representing potential UI elements.
+
+### 3. Automation Orchestration
+
+A task controller coordinates the automation workflow:
+
+- launch detection
+- candidate validation
+- content insertion
+- file saving
+- retry handling
+
+---
 
 ### Repository Tree
 
 ```text
 .
 ├── src/
-│   ├── llm_solution/            # AI-Driven Grounding (VLM)
+│   ├── vlm_solution/            # AI-Driven Grounding (VLM)
 │   │   ├── __init__.py          # Expose public API (Engine and Client)
 │   │   ├── client.py            # Communicate with Google GenAI API & parse JSON
 │   │   ├── engine.py            # Orchestrate AI detection, retries, and verification
 │   │   ├── models.py            # Define data contracts (AIDetection, UIElementNode)
 │   │   ├── prompts.py           # Store system instructions and VLM templates
 │   │   ├── utils.py             # Calculate DPI awareness and coordinate scaling
-│   │   └── gui.py               # Provide Diagnostic Lab for testing AI vision
+│   │   └── gui.py               # PySide6 diagnostic interface for visualizing detections
 │   │
 │   ├── cv_solution/             # Traditional Computer Vision Grounding
 │   │   ├── processors/          # Specialized detection modules
-│   │   │     ├── visual.py      # Execute template matching & feature detection
-│   │   │     ├── ocr.py         # Integrate Tesseract OCR engine
-│   │   │     └── fusion.py      # Combine CV and OCR results
+│   │   │   ├── visual.py        # Execute template matching & feature detection
+│   │   │   ├── ocr.py           # Integrate Tesseract OCR engine
+│   │   │   └── fusion.py        # Combine CV and OCR results
 │   │   ├── __init__.py          # Initialize package
 │   │   ├── engine.py            # Coordinate the CV processing pipeline
 │   │   ├── constants.py         # Centralize detection thresholds and config
 │   │   ├── models.py            # Define data structures for CV hits
 │   │   ├── utils.py             # Provide image processing helper functions
-│   │   └── gui.py               # Provide Diagnostic Lab for tuning CV thresholds
+│   │   └── gui.py               # PySide6 diagnostic interface for CV debugging
 │   │
 │   ├── screenshot_service.py    # Manage High-DPI screen captures and windows
 │   ├── core.py                  # Provide foundational primitives and logging
 │   ├── main.py                  # Provide entry points for the automation pipeline
 │   ├── monitoring.py            # Track performance and log visual artifacts
 │   ├── notepad_task.py          # Orchestrate FSM logic for the Notepad workflow
-│   └── strategies.py            # Define logic for switching LLM/CV modes
+│   └── strategies.py            # Define logic for switching VLM/CV modes
 │
 ├── pyproject.toml               # Configure build system and dependencies (uv)
 ├── notepad_icon.png             # Provide template image for CV grounding
@@ -85,18 +189,18 @@ The project is organized into two primary grounding engines (LLM and OpenCV) and
 
 ## Libraries Used
 
-| Library                 | Purpose                                     |
-| ----------------------- | ------------------------------------------- |
-| `pyautogui`             | Screenshot and input automation             |
-| `pygetwindow`           | Enumerate/manage OS windows                 |
-| `pyperclip`             | Clipboard interaction for paste reliability |
-| `requests`              | Fetch posts data                            |
-| `python-dotenv`         | Load `.env` variables                       |
-| `Pillow`                | Image manipulation (ScreenshotService)      |
-| `google.genai`          | Vision + language model API (LLM grounding) |
-| `opencv-python`         | Template matching and image processing      |
-| `numpy`                 | Array math and geometry utilities           |
-| `pytesseract`           | OCR engine for textual passes               |
+| Library                 | Purpose                                         |
+| ----------------------- | ----------------------------------------------- |
+| `pyautogui`             | Screenshot and input automation                 |
+| `pygetwindow`           | Enumerate/manage OS windows                     |
+| `pyperclip`             | Clipboard interaction for paste reliability     |
+| `requests`              | Fetch posts data                                |
+| `python-dotenv`         | Load `.env` variables                           |
+| `Pillow`                | Image manipulation (ScreenshotService)          |
+| `google.genai`          | Gemini Vision VLM API for semantic UI grounding |
+| `opencv-python`         | Template matching and image processing          |
+| `numpy`                 | Array math and geometry utilities               |
+| `pytesseract`           | OCR engine for textual passes                   |
 
 ---
 
@@ -216,7 +320,7 @@ flowchart TD
 
 ```
 
-### 2. LLM Grounding Engine (AI Vision)
+### 2. VLM Grounding Engine (AI Vision)
 
 The AI engine interprets the screen as a coordinate grid, utilizing "Position Inference" to map semantic instructions (e.g., "Find the Notepad icon") to precise bounding boxes.
 
@@ -228,11 +332,11 @@ flowchart TD
     Scope -->|Desktop| Full[Capture Desktop PIL Image]
     Scope -->|Specific App| FindWin[Locate Target Window Coords]
 
-    FindWin --> Iso[Draw Red Anchor Rectangle on Screen]
+    FindWin --> Iso[In-Memory Canvas: Draw Red Anchor]
     Full --> Prep
     Iso --> Prep
 
-    Prep[Prepare ai_vision_input.png] --> Context[Build Prompt with Ref & Exclusion Context]
+    Prep[In-Memory PIL Object] --> Context[Build Prompt with Ref & Exclusion Context]
     Context --> RetryLoop{Retry Attempts Remaining}
 
     %% API Interaction
@@ -255,13 +359,13 @@ flowchart TD
     %% Coordinate Transformation Pipeline
     ProcessLoop{For Each Raw Detection}
     ProcessLoop --> Scaling[Scale 0-1000 to Absolute Pixels]
-    Scaling --> MinSize[Enforce Minimum BBox Size]
-    MinSize --> Center[Compute Center Coords & Pixel Size]
+    Scaling --> Size[Extract W/H Size]
+    Size --> Center[Compute Center Coords]
 
     %% Optional Verification Step
-    Center --> VerifyFlag{Verification Enabled?}
+    Center --> VerifyFlag{Verify Enabled?}
     VerifyFlag -->|No| Debug
-    VerifyFlag -->|Yes| Crop[Crop Local 100px Margin Region]
+    VerifyFlag -->|Yes| Crop[Fresh Desktop Capture & Crop]
     Crop --> VerifyPrompt[Build Verification Prompt]
     VerifyPrompt --> VerifyCall[Vision API: Secondary 'Eyes-on' Check]
     VerifyCall --> VerifyResult{AI Confirms Target?}
@@ -286,7 +390,7 @@ flowchart TD
     class Start,DPI,Full,FindWin,Iso entry
     class Scope,RetryLoop,APIError,ValidJSON,EmptyCheck,RetryDecision,VerifyFlag,VerifyResult decision
     class Call,Extract,VerifyCall,VerifyPrompt ai
-    class Scaling,MinSize,Center,Crop transform
+    class Scaling,Size,Center,Crop transform
     class SuccessReturn success
     class FailReturn failure
 ```
@@ -297,9 +401,9 @@ flowchart TD
 
 ### 1. Workspace Preservation & Safety
 
-* **Archive Old Posts:** Before starting, the system moves any existing `.txt` results from the project directory to an `/archive` folder.
-* **Window Snapshot:** The automation captures the current state of visible windows to restore your workspace after execution.
-* **Input Lock:** Hardware input (mouse and keyboard) is programmatically blocked during the **Launch Sequence** to prevent accidental user interference.
+- **Archive Old Posts:** Before starting, the system moves any existing `.txt` results from the project directory to an `/archive` folder.
+- **Window Snapshot:** The automation captures the current state of visible windows to restore your workspace after execution.
+- **Input Lock:** Hardware input (mouse and keyboard) is programmatically blocked during the **Launch Sequence** to prevent accidental user interference.
 
 ---
 
@@ -307,19 +411,19 @@ flowchart TD
 
 #### A — Prepare Desktop State
 
-* **Minimize All:** Windows are minimized (`Win + M`) to provide a clean desktop "canvas" for the vision engines.
-* **In-Memory Capture:** The system takes a high-resolution screenshot processed in RAM.
+- **Minimize All:** Windows are minimized (`Win + M`) to provide a clean desktop "canvas" for the vision engines.
+- **In-Memory Capture:** The system takes a high-resolution screenshot processed in RAM.
 
 #### B — Perception & Launch Sequence
 
-* **Hybrid Strategy:** The system uses a multi-layered approach to find the Notepad shortcut:
-  * **Primary Engine:** Attempts detection (e.g., OpenCV template matching/OCR).
-  * **Fallback Engine:** If the primary engine finds zero candidates or fails to launch, the secondary engine (e.g., Gemini Vision LLM) is automatically triggered.
-* **Launch Retry Loop:**
-  * Iterates through candidates sorted by confidence score.
-  * Performs a double-click and verifies if a window titled "Notepad" appears.
-  * The system checks for the window **6 times** (approx. 1s intervals). If it doesn't appear, it moves to the **next best candidate**.
-* **Verification:** If all candidates are exhausted, the post is logged as a `FATAL` failure and the system moves to the next post.
+- **Hybrid Strategy:** The system uses a multi-layered approach to find the Notepad shortcut:
+  - **Primary Engine:** Attempts detection (e.g., OpenCV template matching/OCR).
+  - **Fallback Engine:** If the primary engine finds zero candidates or fails to launch, the secondary engine (Gemini Vision VLM) is automatically triggered.
+- **Launch Retry Loop:**
+  - Iterates through candidates sorted by confidence score.
+  - Performs a double-click and verifies if a window titled "Notepad" appears.
+  - The system checks for the window **6 times** (approx. 1s intervals). If it doesn't appear, it moves to the **next best candidate**.
+- **Verification:** If all candidates are exhausted, the post is logged as a `FATAL` failure and the system moves to the next post.
 
 #### C — Content Injection
 
@@ -335,41 +439,52 @@ flowchart TD
 
 #### E — Teardown & Observability
 
-* **Cleanup:** Closes any "Untitled" Notepad windows that failed to save.
-* **Restore:** Re-opens the windows captured in the initial snapshot.
-* **Telemetry:** Finalizes the `metadata.json` and saves visual debug artifacts (if enabled) for post-run auditing.
+- **Cleanup:** Closes any "Untitled" Notepad windows that failed to save.
+- **Restore:** Re-opens the windows captured in the initial snapshot.
+- **Telemetry:** Finalizes the `metadata.json` and saves visual debug artifacts (if enabled) for post-run auditing.
 
 ---
 
 ## Error Handling & Robustness
 
-* **API Resilience:** Implemented manual retries with **exponential backoff** (1s, 2s, 4s) for data fetching to handle transient network instability.
-* **Multi-Candidate Recovery:** Grounding engines iterate through secondary matches if the primary candidate fails to launch the target application (e.g., due to a false positive or occlusion).
-* **Verification Loops:** Nested wait-logic for window activation (6 tries per candidate) and file dialogs (10 tries) to synchronize with OS-level latency.
-* **Workspace Integrity:** Guaranteed restoration of original window states and cleanup of temporary artifacts using `finally` blocks and `Path.unlink(missing_ok=True)`.
-* **Visibility Edge Cases:** Factored in partial occlusion, DPI scaling, and busy backgrounds via coordinate normalization and multi-pass CV.
-* **Overwrite Handling:** Automated detection and confirmation of "Save As" overwrite prompts.
-* **Diagnostic Logging:** Engines support callback logging; OpenCV provides real-time performance metrics per detection pass.
-* **High-DPI Awareness:** Uses `ctypes` to interface with `user32.dll` and `shcore.dll`. This forces the OS to treat the automation as "Per-Monitor Architecture-Aware," preventing coordinate drift on 4K or scaled displays.
-* **Visual Self-Correction:** The `_verify_detection` method crops a 50px margin around click sites for a second AI pass, confirming the target was actually hit before proceeding.
+- **API Resilience:** Implemented manual retries with **exponential backoff** (1s, 2s, 4s) for data fetching to handle transient network instability.
+- **Multi-Candidate Recovery:** Grounding engines iterate through secondary matches if the primary candidate fails to launch the target application (e.g., due to a false positive or occlusion).
+- **Verification Loops:** Nested wait-logic for window activation (6 tries per candidate) and file dialogs (10 tries) to synchronize with OS-level latency.
+- **Workspace Integrity:** Guaranteed restoration of original window states and cleanup of temporary artifacts using `finally` blocks and `Path.unlink(missing_ok=True)`.
+- **Visibility Edge Cases:** Factored in partial occlusion, DPI scaling, and busy backgrounds via coordinate normalization and multi-pass CV.
+- **Overwrite Handling:** Automated detection and confirmation of "Save As" overwrite prompts.
+- **Diagnostic Logging:** Engines support callback logging; OpenCV provides real-time performance metrics per detection pass.
+- **High-DPI Awareness:** Uses `ctypes` to interface with `user32.dll` and `shcore.dll`. This forces the OS to treat the automation as "Per-Monitor Architecture-Aware," preventing coordinate drift on 4K or scaled displays.
+- **Visual Self-Correction:** The `_verify_detection` method crops a 50px margin around click sites for a second AI pass, confirming the target was actually hit before proceeding.
 
 ---
 
 ## Screenshots & GUIs
 
-### LLM Grounding GUI
+### VLM Grounding GUI
 
-Example of detected LLM coords:
-![LLM Grounding GUI](screenshots/llm_ss.png)
+Example of detected VLM coords:
+![VLM Grounding GUI](screenshots/vlm_ss.png)
 
 ### OpenCV Grounding GUI
 
 Example of detected OpenCV coords:
 ![OpenCV Grounding GUI](screenshots/cv_ss.png)
 
-### How the GUIs Were Created
+### Diagnostic GUIs
 
-Although I do not personally write PySide code, I **designed the workflow, logic, and instructions** for the diagnostic GUIs, and **debugged and verified their behavior**. An AI implemented the PySide applications according to these specifications. The GUIs were used **only to visualize detected desktop elements and generate example outputs** for demonstration purposes in this project; they are not part of the production automation.
+The project includes PySide6-based diagnostic interfaces used during development to visualize grounding results and tune detection parameters.
+
+These tools allow inspection of detected desktop elements, bounding boxes, confidence scores, and click coordinates in real time. This simplifies debugging and validation of the grounding pipelines across different desktop conditions.
+
+The diagnostic GUIs were primarily used to:
+
+- verify icon detection accuracy
+- inspect OCR results
+- visualize candidate ranking
+- generate example screenshots for documentation
+
+These tools are **development utilities** and are not required for running the automation workflow.
 
 ---
 
@@ -463,68 +578,70 @@ flowchart TD
 
 ## Scaling to Arbitrary Tasks
 
-While this implementation is currently demonstrated via Notepad, the architecture is built for horizontal scaling across any desktop-based workflow:
+Although this project targets the Notepad desktop shortcut, the architecture was designed to explore how the same grounding techniques could generalize to other desktop automation tasks.
 
 ### 1. Strategy-Based Orchestration
 
 The system utilizes a **Strategy Pattern** (see `strategies.py`). By swapping the `LaunchStrategy`, you can change the entire perception logic without touching the FSM.
 
-* **Configurable Targets:** Target any app (e.g., "Slack", "VS Code", "Terminal") by simply updating `LLM_INSTRUCTION`, `OPENCV_TEXT_QUERY`, and `ICON_PATH`.
-* **Plug-and-Play Engines:** The `NotepadTask` accepts any implementation of `LaunchStrategy`, allowing for future integration of specialized models (e.g., YOLO or Detectron2) with zero refactoring of the core business logic.
+- **Configurable Targets:** Target any app (e.g., "Slack", "VS Code", "Terminal") by simply updating `VLM_INSTRUCTION`, `OPENCV_TEXT_QUERY`, and `ICON_PATH`.
+- **Plug-and-Play Engines:** The `NotepadTask` accepts any implementation of `LaunchStrategy`, allowing for future integration of specialized models (e.g., YOLO or Detectron2) with zero refactoring of the core business logic.
 
 ### 2. Resolution & DPI Independence
 
 The `ScreenshotService` and grounding engines ensure cross-hardware compatibility through two mechanisms:
 
-* **Hardware Awareness:** The system calls `SetProcessDpiAwarenessContext` to ensure Windows reports physical pixel grids rather than logical scaled coordinates.
-* **Coordinate Normalization:** The vision engines operate on a 0-1000 normalized scale. The transformation to screen space is calculated as:
+- **Hardware Awareness:** The system calls `SetProcessDpiAwarenessContext` to ensure Windows reports physical pixel grids rather than logical scaled coordinates.
+- **Coordinate Normalization:** The vision engines operate on a 0-1000 normalized scale. The transformation to screen space is calculated as:
   $$Pixel_{coords} = \frac{Normalized_{coords}}{1000} \cdot Resolution_{max}$$
   This allows identical logic to function perfectly on 1080p, 1440p, or 4K monitors.
 
 ### 3. Precision Grounding & Isolation
 
-* **Attention Masking:** For targeting elements within specific windows, the engine can draw a 10px red boundary to isolate the ROI (Region of Interest). This "Isolation Mode" significantly reduces AI hallucinations by forcing the vision model to ignore background noise.
-* **Hybrid Resiliency:** You can chain engines (e.g., `HybridCVFirstStrategy`) so that if a lightweight CV check fails, a heavy-duty LLM check automatically takes over.
+- **Attention Masking:** For targeting elements within specific windows, the engine can draw a 10px red boundary to isolate the ROI (Region of Interest). This "Isolation Mode" significantly reduces AI hallucinations by forcing the vision model to ignore background noise.
+- **Hybrid Resiliency:** You can chain engines (e.g., `HybridCVFirstStrategy`) so that if a lightweight CV check fails, a heavy-duty VLM check automatically takes over.
 
 ### 4. Semantic Flexibility
 
-Unlike rigid "pixel-hunting" bots, the LLM engine understands **intent**. It can find an icon based on visual descriptions (e.g., *"the blue icon with a white 'W'"*) rather than exact filename matches, making it robust against OS theme changes, custom icon packs, or localized system languages
+Unlike rigid "pixel-hunting" bots, the VLM engine understands **intent**. It can find an icon based on visual descriptions (e.g., *"the blue icon with a white 'W'"*) rather than exact filename matches, making it robust against OS theme changes, custom icon packs, or localized system languages
 
 ---
 
-## Architectural Decisions & Discussion
+## Design Decisions
+
+The following sections explain the reasoning behind the grounding strategies and robustness mechanisms used in this project. The goal was to build a detection system that remains reliable even when desktop conditions change (icon position, background noise, DPI scaling, or partial occlusion).
 
 ### Perception Strategy: Hybrid Grounding
 
 The system employs a **dual-engine approach** to solve the "Grounding Problem" in desktop automation:
 
-* **LLM Grounding (Semantic):** Uses Gemini Vision for high-level reasoning. It excels at "fuzzy" matches where icons might be slightly different or moved.
-* **OpenCV Grounding (Heuristic):** Provides sub-millisecond, pixel-level precision for "exact" matches.
-* **The "Why":** This hybrid approach balances cost and speed. The system attempts a lightweight local CV check first and only escalates to a cloud-based LLM if the local heuristic fails to achieve a high confidence score.
+- **VLM Grounding (Semantic):** Uses a Gemini Vision-Language Model for high-level semantic reasoning. It excels at "fuzzy" matches where icons might be slightly different or moved.
+- **OpenCV Grounding (Heuristic):** Provides low-latency, pixel-level precision for exact matches.
+- **The "Why":** This hybrid approach balances cost and speed. The system attempts a lightweight local CV check first and only escalates to a cloud-based VLM if the local heuristic fails to achieve a high confidence score.
 
 ### Performance & Optimization
 
-* **Parallel Detection Passes:** To minimize UI latency, the OpenCV engine executes multiple detection passes (Color, Grayscale, Edge-map, and LAB) in parallel using a `ThreadPoolExecutor` with up to 8 concurrent workers.
-* **In-Memory Processing:** To maximize speed and privacy, all screenshots and intermediate visual crops are handled as in-memory buffers (PIL/MatLike). No temporary files are written to the disk during the detection phase.
+- **Parallel Detection Passes:** To minimize UI latency, the OpenCV engine executes multiple detection passes (Color, Grayscale, Edge-map, and LAB) in parallel using a `ThreadPoolExecutor` with up to 8 concurrent workers.
+- **In-Memory Processing:** To maximize speed and privacy, all screenshots and intermediate visual crops are handled as in-memory buffers (PIL/MatLike). No temporary files are written to the disk during the detection phase.
 
 ### Robustness & Scaling Logic
 
-* **Transparent Template Matching:** The engine utilizes 4-channel (BGRA) templates. By extracting the alpha channel as a **mask**, the matching algorithm ignores the desktop wallpaper or "busy" background noise, focusing strictly on the icon's unique geometry.
-* **Geometry Validation:** To filter out false positives (like text blocks or taskbar elements), matches are ranked by a **Geometric Aspect Ratio Score**:
+- **Transparent Template Matching:** The engine utilizes 4-channel (BGRA) templates. By extracting the alpha channel as a **mask**, the matching algorithm ignores the desktop wallpaper or "busy" background noise, focusing strictly on the icon's unique geometry.
+- **Geometry Validation:** To filter out false positives (like text blocks or taskbar elements), matches are ranked by a **Geometric Aspect Ratio Score**:
     $$\text{Score}_{geom} = \frac{\min(R_{target}, R_{hit})}{\max(R_{target}, R_{hit})}$$
-* **Resolution Independence:** The system utilizes a normalized coordinate system (0–1000). Physical click coordinates are calculated dynamically based on the active monitor resolution:
+- **Resolution Independence:** The system utilizes a normalized coordinate system (0–1000). Physical click coordinates are calculated dynamically based on the active monitor resolution:
     $$Pixel_{coords} = \frac{Normalized_{coords}}{1000} \cdot Resolution_{max}$$
-* **Multi-Scale Robustness:** The engine automatically generates a pyramid of icon scales. This ensures the bot works regardless of whether the user has Windows icons set to "Small," "Medium," or "Large."
+- **Multi-Scale Robustness:** The engine automatically generates a pyramid of icon scales. This ensures the bot works regardless of whether the user has Windows icons set to "Small," "Medium," or "Large."
 
 ### Safety & Resiliency
 
-* **Windows Input Blocking:** During critical double-click sequences, the system invokes `BlockInput(True)` via `user32.dll`. This prevents the user's physical mouse movements from knocking the bot off-target.
-* **Confirmation Loops:** The FSM doesn't just "click and pray." It performs post-action verification by monitoring window titles and handles, ensuring Notepad is actually active before attempting to paste content.
+- **Windows Input Blocking:** During critical double-click sequences, the system invokes `BlockInput(True)` via `user32.dll`. This prevents the user's physical mouse movements from knocking the bot off-target.
+- **Confirmation Loops:** The FSM doesn't just "click and pray." It performs post-action verification by monitoring window titles and handles, ensuring Notepad is actually active before attempting to paste content.
 
 ### Future Extensions
 
-* **Local Vision Transformers:** Transitioning from Gemini to local open-vocabulary models like **Grounding DINO** or **YOLO-World**. This would eliminate API costs and allow the system to run in completely "air-gapped" (offline) environments.
-* **Contextual Self-Healing:** Implementing a "retry-with-variation" logic where the bot tries to right-click or use the Start Menu if the desktop shortcut is obscured by another window.
+- **Local Vision Transformers:** Transitioning from Gemini VLM to local open-vocabulary vision models like **Grounding DINO** or **YOLO-World**. This would eliminate API costs and allow the system to run in completely "air-gapped" (offline) environments.
+- **Contextual Self-Healing:** Implementing a "retry-with-variation" logic where the bot tries to right-click or use the Start Menu if the desktop shortcut is obscured by another window.
 
 ---
 
@@ -536,9 +653,9 @@ The "Brain" of this system is a multi-modal grounding engine that fuses visual h
 
 The `CVGroundingEngine` executes a probabilistic detection pipeline across three distinct layers:
 
-* **Global Visual Sweep:** 8-core parallel processing using a `ThreadPoolExecutor` to run Template Matching across Color (BGR), Perceptual (LAB), Grayscale, and Edge-map spaces simultaneously.
-* **Global OCR Sweep:** A full-screen text search using Tesseract with multiple image-processing modes (OTSU, Inverted, and Top-hat filtering) and a **2.5x cubic upscale** to isolate labels from noisy backgrounds.
-* **Targeted Recovery:** If an icon is found without a label, the engine generates a "Targeted ROI" sub-region (extending `1.6x` vertically) to force-search for text using fuzzy Levenshtein matching.
+- **Global Visual Sweep:** 8-core parallel processing using a `ThreadPoolExecutor` to run Template Matching across Color (BGR), Perceptual (LAB), Grayscale, and Edge-map spaces simultaneously.
+- **Global OCR Sweep:** A full-screen text search using Tesseract with multiple image-processing modes (OTSU, Inverted, and Top-hat filtering) and a **2.5x cubic upscale** to isolate labels from noisy backgrounds.
+- **Targeted Recovery:** If an icon is found without a label, the engine generates a "Targeted ROI" sub-region (extending `1.6x` vertically) to force-search for text using fuzzy Levenshtein matching.
 
 ### 2. Spatial Fusion & Scoring
 
@@ -555,9 +672,9 @@ If a Visual hit and an OCR hit overlap within a specific radius, a `FUSION_SCORE
 
 The project includes a PySide6-based **Vision Lab** (`gui.py`) designed for real-time parameter tuning:
 
-* **Live Inspection:** Toggle detection passes (LAB, Edge, etc.) to see which one is most effective for your current wallpaper.
-* **Threshold Hot-Swapping:** Adjust `constants.py` values via the GUI sliders to find the "Sweet Spot" for your environment.
-* **Coordinate Validation:** Click "Copy Best" to grab the physical pixel coordinates and verify alignment.
+- **Live Inspection:** Toggle detection passes (LAB, Edge, etc.) to see which one is most effective for your current wallpaper.
+- **Threshold Hot-Swapping:** Adjust `constants.py` values via the GUI sliders to find the "Sweet Spot" for your environment.
+- **Coordinate Validation:** Click "Copy Best" to grab the physical pixel coordinates and verify alignment.
 
 ### 2. Tuning `constants.py`
 
@@ -572,9 +689,9 @@ All detection logic is governed by centralized constants. Use the table below to
 
 ### 3. Visual Observability & Safety
 
-* **Artifact Snapshots:** Upon a `FATAL` error, the `RunMonitor` saves a high-contrast debug image to `logs/run_id/errors/` with rendered bounding boxes and confidence scores.
-* **Telemetry:** Check `metadata.json` in the log folder for execution times, engine scores, and DPI awareness status.
-* **Hardware Safety:** If the mouse is locked via `BlockInput`, the system automatically releases the lock upon task timeout or failure.
+- **Artifact Snapshots:** Upon a `FATAL` error, the `RunMonitor` saves a high-contrast debug image to `logs/run_id/errors/` with rendered bounding boxes and confidence scores.
+- **Telemetry:** Check `metadata.json` in the log folder for execution times, engine scores, and DPI awareness status.
+- **Hardware Safety:** If the mouse is locked via `BlockInput`, the system automatically releases the lock upon task timeout or failure.
 
 ### 4. Hardware & DPI Checklist
 

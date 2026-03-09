@@ -8,8 +8,7 @@ from google import genai
 
 if TYPE_CHECKING:
     from PIL import Image
-
-    from llm_solution import AIDetection
+    from vlm_solution import AIDetection
 
 
 class AiClient:

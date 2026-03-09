@@ -13,11 +13,11 @@ from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw
+from vlm_solution.client import AiClient
+from vlm_solution.models import UIElementNode
+from vlm_solution.prompts import DETECTION_PROMPT_TEMPLATE, VERIFICATION_PROMPT_TEMPLATE
+from vlm_solution.utils import AiImageUtils
 
-from llm_solution.client import AiClient
-from llm_solution.models import UIElementNode
-from llm_solution.prompts import DETECTION_PROMPT_TEMPLATE, VERIFICATION_PROMPT_TEMPLATE
-from llm_solution.utils import AiImageUtils
 from screenshot_service import ScreenshotService
 
 if TYPE_CHECKING:
