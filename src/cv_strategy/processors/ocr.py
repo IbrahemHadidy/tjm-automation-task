@@ -10,8 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import cv2
 import pytesseract
-
-from cv_solution.constants import (
+from cv_strategy.constants import (
     INTERPOLATION_UP,
     MAX_8BIT_VALUE,
     OCR_ENGINE_MODE,
@@ -38,15 +37,14 @@ from cv_solution.constants import (
     RECOVERY_VERTICAL_EXTEND_FACTOR,
     RECOVERY_VERTICAL_OFFSET_PX,
 )
-from cv_solution.models import Candidate, DetectionMethod
-from cv_solution.utils import ImageUtils
+from cv_strategy.models import Candidate, DetectionMethod
+from cv_strategy.utils import ImageUtils
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from cv2.typing import MatLike
-
-    from cv_solution.models import GroundingConfig
+    from cv_strategy.models import GroundingConfig
 
 logger = logging.getLogger(__name__)
 

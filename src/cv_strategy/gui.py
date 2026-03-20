@@ -44,13 +44,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cv_solution.engine import CVGroundingEngine, GroundingConfig
+from cv_strategy.engine import CVGroundingEngine, GroundingConfig
 from screenshot_service import ScreenshotService
 
 if TYPE_CHECKING:
     from cv2.typing import MatLike
 
-    from cv_solution.models import Candidate
+    from cv_strategy.models import Candidate
 
 # --- STYLING CONSTANTS ---
 BG_COLOR = "#0F0F0F"

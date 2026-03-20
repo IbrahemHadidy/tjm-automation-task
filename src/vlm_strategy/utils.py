@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from PIL import Image, ImageDraw, ImageFont
 
 if TYPE_CHECKING:
-    from vlm_solution.models import UIElementNode
+    from vlm_strategy.models import UIElementNode
 
 
 class AiImageUtils:

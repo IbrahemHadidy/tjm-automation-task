@@ -11,8 +11,7 @@ from typing import TYPE_CHECKING, Any, ParamSpec
 
 import cv2
 import numpy as np
-
-from cv_solution.constants import (
+from cv_strategy.constants import (
     BGR_TO_GRAY,
     BGR_TO_LAB,
     CANNY_HIGH_THRESHOLD,
@@ -30,15 +29,14 @@ from cv_solution.constants import (
     TPL_MATCH_METHOD,
     TPL_MULTISCALE_THRESHOLD,
 )
-from cv_solution.models import Candidate, DetectionMethod, PerfStat
+from cv_strategy.models import Candidate, DetectionMethod, PerfStat
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
     from cv2.typing import MatLike
-
-    from cv_solution.models import GroundingConfig
+    from cv_strategy.models import GroundingConfig
 
 logger = logging.getLogger(__name__)
 

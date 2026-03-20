@@ -16,5 +16,6 @@
     "files.insertFinalNewline": true,
     "files.associations": {
         ".env.jenkins": "dotenv"
-    }
+    },
+    "markdown.validate.enabled": true
 }

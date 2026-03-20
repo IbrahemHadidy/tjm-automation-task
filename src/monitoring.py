@@ -18,12 +18,59 @@ import json
 import time
 import uuid
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any, TypedDict
 
+import cv2
 import pyautogui
 
-if TYPE_CHECKING:
-    from pathlib import Path
+
+class RunMetrics(TypedDict):
+    """Structured telemetry metrics captured during a task execution.
+
+    This schema defines the summary statistics recorded at the end of an
+    automation run and persisted in the run metadata manifest.
+
+    The metrics provide visibility into FSM performance, failure modes,
+    and execution timing for each automation phase.
+
+    Attributes:
+        processed_count:
+            Total number of posts successfully written and saved.
+
+        launch_failures:
+            Number of failed attempts to launch the target application.
+
+        launch_retries:
+            Number of retry attempts triggered during launch operations.
+
+        write_failures:
+            Number of failures while writing post content to the editor.
+
+        save_failures:
+            Number of failures encountered while saving files to disk.
+
+        close_failures:
+            Number of failures encountered while closing the application
+            window after a save operation.
+
+        success_rate:
+            Ratio of successfully processed posts to total attempted posts.
+
+        step_timings_sec:
+            Aggregated execution time per FSM state in seconds.
+            Keys correspond to the state names from the TaskState enum.
+
+    """
+
+    processed_count: int
+    launch_failures: int
+    launch_retries: int
+    write_failures: int
+    save_failures: int
+    close_failures: int
+    success_rate: float
+    step_timings_sec: dict[str, float]
 
 
 class RunMonitor:
@@ -154,7 +201,57 @@ class RunMonitor:
             "crash_screenshot": str(crash_img_path),
         }
 
-    def finalize(self, run_metrics: dict[str, Any]) -> None:
+    def log_heartbeat(self, message: str) -> None:
+        """Emit a periodic 'alive' signal with current state metrics.
+
+        Useful for identifying infinite loops or unhandled UI deadlocks.
+
+        Args:
+            message: A descriptive status message.
+
+        """
+        # We write to a separate heartbeat file to avoid cluttering metadata
+        heartbeat_path = self.run_dir / "heartbeat.log"
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with Path.open(heartbeat_path, "a") as f:
+            f.write(f"[{timestamp}] {message}\n")
+
+    def compile_video_summary(self, fps: int = 2) -> None:
+        """Stitch all captured step screenshots into an MP4 video payload.
+
+        Args:
+            fps: Frames per second for the resulting video. Defaults to 2.
+
+        """
+        images = sorted(self.steps_dir.glob("*.png"))
+        if not images:
+            return
+
+        video_path = str(self.run_dir / "execution_replay.mp4")
+
+        # Read first image to get dimensions
+        frame = cv2.imread(str(images[0]))
+        if frame is None:
+            msg = f"Failed to load image: {images[0]}"
+            raise RuntimeError(msg)
+
+        height, width, _ = frame.shape
+
+        fourcc = cv2.VideoWriter.fourcc(*"mp4v")
+        video = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+
+        print("[TELEMETRY] Compiling execution video replay...")
+        for image_path in images:
+            img = cv2.imread(str(image_path))
+            if img is not None:
+                # Resize if necessary to match the first frame
+                if img.shape[:2] != (height, width):
+                    img = cv2.resize(img, (width, height))
+                video.write(img)
+
+        video.release()
+
+    def finalize(self, run_metrics: RunMetrics) -> None:
         """Write the final telemetry manifest to a JSON file.
 
         Args:
@@ -163,6 +260,10 @@ class RunMonitor:
         """
         self.execution_metadata["end_time_unix"] = time.time()
         self.execution_metadata["summary_metrics"] = run_metrics
+
+        video_path = self.run_dir / "execution_replay.mp4"
+        if video_path.exists():
+            self.execution_metadata["execution_video"] = str(video_path)
 
         manifest_path = self.run_dir / "metadata.json"
         manifest_path.write_text(

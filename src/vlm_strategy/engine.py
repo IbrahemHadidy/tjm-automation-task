@@ -13,12 +13,12 @@ from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw
-from vlm_solution.client import AiClient
-from vlm_solution.models import UIElementNode
-from vlm_solution.prompts import DETECTION_PROMPT_TEMPLATE, VERIFICATION_PROMPT_TEMPLATE
-from vlm_solution.utils import AiImageUtils
 
 from screenshot_service import ScreenshotService
+from vlm_strategy.client import AiClient
+from vlm_strategy.models import UIElementNode
+from vlm_strategy.prompts import DETECTION_PROMPT_TEMPLATE, VERIFICATION_PROMPT_TEMPLATE
+from vlm_strategy.utils import AiImageUtils
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,13 +35,11 @@ class AiGroundingEngine:
 
     def __init__(
         self,
-        debug_dir: str | None = None,
         model_id: str = "gemini-3.1-pro-preview",
     ) -> None:
         """Initialize components and performs system-level setup.
 
         Args:
-            debug_dir: Optional path to save diagnostic images.
             model_id: Gemini model identifier to use for vision tasks.
 
         Raises:
@@ -60,9 +58,6 @@ class AiGroundingEngine:
 
         # Default logger is print; can be overridden in resolve_coordinates
         self.log: Callable[[str], None] = print
-        self.debug_dir = Path(debug_dir) if debug_dir else None
-        if self.debug_dir:
-            self.debug_dir.mkdir(parents=True, exist_ok=True)
 
         self.last_raw_image: Image.Image | None = None
         self.last_debug_image: Image.Image | None = None

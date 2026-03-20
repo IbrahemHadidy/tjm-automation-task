@@ -10,43 +10,40 @@ from __future__ import annotations
 import ctypes
 import time
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 import pyautogui
 import pygetwindow as gw
-from vlm_solution.engine import AiGroundingEngine
-from vlm_solution.utils import AiImageUtils
 
-from cv_solution.engine import CVGroundingEngine
+from config import ICON_PATH, OPENCV_TEXT_QUERY, TESS_PATH, VLM_INSTRUCTION
+from cv_strategy.engine import CVGroundingEngine
+from vlm_strategy.engine import AiGroundingEngine
+from vlm_strategy.utils import AiImageUtils
 
 if TYPE_CHECKING:
     from cv2.typing import MatLike
 
-# Configuration Constants
-ICON_PATH = Path("notepad_icon.png")
-TESS_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-VLM_INSTRUCTION = "Notepad shortcut"
-OPENCV_TEXT_QUERY = "Notepad"
 
 # =========================================================
 # HELPERS
 # =========================================================
 
 
-def _get_active_notepad() -> gw.Win32Window | None:
+def _get_active_notepad_hwnd() -> int | None:
     """Locate the currently visible Notepad window on the desktop.
 
     Returns:
-        The window object if found and visible, otherwise None.
+        The window handle (HWND) if found and visible; None otherwise.
 
     """
     wins = [
-        w for w in gw.getWindowsWithTitle("Notepad") if w.visible and not w.isMinimized
+        w
+        for w in gw.getWindowsWithTitle(OPENCV_TEXT_QUERY)
+        if w.visible and not w.isMinimized
     ]
-    return wins[0] if wins else None
+    return wins[0]._hWnd if wins else None  # noqa: SLF001
 
 
 def _verify_and_launch(
@@ -55,45 +52,43 @@ def _verify_and_launch(
     score: float,
     source: str,
     min_score: float = 0.5,
-) -> bool:
-    """Execute a double-click on a candidate location using a hardware input lock.
+) -> int | None:
+    """Execute a double-click on a candidate location with a hardware input lock.
 
     Args:
-        x, y: Target screen coordinates.
-        score: Confidence score from the perception engine.
-        source: Name of the strategy (e.g., 'CV') for logging.
-        min_score: Threshold below which the attempt is aborted.
+        x: Target screen X coordinate.
+        y: Target screen Y coordinate.
+        score: Confidence score from the perception engine (0.0 to 1.0).
+        source: Name of the calling strategy for logging/telemetry.
+        min_score: Threshold below which the launch attempt is aborted.
 
     Returns:
-        True if Notepad is detected after the interaction.
+        The HWND of the successfully launched application; None if the
+        application failed to appear or the score was too low.
 
     """
     if score < min_score:
-        return False
+        return None
 
     try:
-        # Safety Lock: Prevent user mouse/keyboard movement from breaking the click
-        # Note: Requires Administrator privileges
+        # Hardware Lock to prevent User Interference during the critical click
         ctypes.windll.user32.BlockInput(True)  # noqa: FBT003
-
-        print(
-            f"[INFO] Attempting launch via {source} at ({x}, {y}) [Score: {score:.2f}]",
-        )
+        print(f"[INFO] Launch via {source} at ({x}, {y}) [Score: {score:.2f}]")
         pyautogui.doubleClick(x, y)
         time.sleep(0.2)
     finally:
-        # Always release the hardware lock
         ctypes.windll.user32.BlockInput(False)  # noqa: FBT003
 
-    # Polling: Wait for the OS to initialize the window
+    # Poll for the OS to initialize the window
     for _ in range(6):
-        if _get_active_notepad():
-            print(f"[SUCCESS] Notepad confirmed via {source}.")
-            return True
+        hwnd = _get_active_notepad_hwnd()
+        if hwnd:
+            print(f"[SUCCESS] {OPENCV_TEXT_QUERY} confirmed via {source}. HWND: {hwnd}")
+            return hwnd
         time.sleep(0.5)
 
     print(f"[WARN] {source} target at ({x}, {y}) failed to open application.")
-    return False
+    return None
 
 
 # =========================================================
@@ -102,140 +97,155 @@ def _verify_and_launch(
 
 
 class LaunchStrategy(ABC):
-    """Act as the base class for all UI grounding perception strategies."""
+    """Base class for all UI grounding perception strategies.
+
+    This interface defines the contract for discovering UI elements and
+    executing a hardware-validated launch sequence.
+    """
 
     @abstractmethod
-    def launch(self) -> bool:
+    def launch(self) -> int | None:
         """Execute the grounding and launch sequence.
 
         Returns:
-            True if the target application was successfully launched.
+            The Win32 window handle (HWND) of the launched application.
 
         """
 
     @abstractmethod
     def get_debug_frame(self) -> MatLike | None:
-        """Retrieve the visual perception map from the last launch attempt."""
+        """Retrieve the visual perception map from the last launch attempt.
+
+        Returns:
+            An OpenCV image showing the perception result, or None if no
+            attempt has been made.
+
+        """
 
 
 class VLMStrategy(LaunchStrategy):
-    """Ground applications using Multi-modal VLM reasoning."""
+    """Ground applications using Multi-modal VLM reasoning.
 
-    def __init__(self, debug_dir: str = "logs/ai_debug") -> None:
-        """Initialize the AI grounding engine with a specific debug path."""
-        self.engine = AiGroundingEngine(debug_dir=debug_dir)
+    Attributes:
+        engine: The AI grounding engine for coordinate resolution.
+        last_perception_viz: The BGR image buffer of the last inference result.
+
+    """
+
+    def __init__(self) -> None:
+        """Initialize the VLM strategy with a specific debug directory."""
+        self.engine = AiGroundingEngine()
         self.last_perception_viz: MatLike | None = None
 
-    def launch(self) -> bool:
-        """Resolve coordinates using AI vision and attempt the launch sequence.
-
-        Workflow:
-        1. Resolve target coordinates via the AI engine.
-        2. Generate a 'Magenta Auditor' artifact with bounding boxes.
-        3. Iterate through candidates in order of confidence.
-        """
+    def launch(self) -> int | None:
+        """Resolve coordinates via VLM and attempt application launch."""
         try:
-            # 1. Request AI Predictions
             results = self.engine.resolve_coordinates(
                 instruction=VLM_INSTRUCTION,
                 target_window="Desktop",
             )
-
             if not results:
-                print("[VLM Strategy] AI found no valid targets.")
-                return False
+                return None
 
-            # 2. Sort by confidence scores
+            # Sort by highest score, then by rank
             results.sort(key=lambda n: (-n.get("score", 0.0), n.get("rank", 1)))
 
-            # 3. Create a Perception Map (Magenta Audit Artifact)
+            # Prepare debug visualization
             screenshot = pyautogui.screenshot()
             viz_pil = AiImageUtils.draw_debug_results(screenshot, results)
-
-            # Convert to CV format (BGR) for the monitoring system
             self.last_perception_viz = cv2.cvtColor(
                 np.array(viz_pil),
                 cv2.COLOR_RGB2BGR,
             )
 
-            # 4. Execute attempts sequentially until one succeeds
-            return any(
-                _verify_and_launch(
+            for n in results:
+                hwnd = _verify_and_launch(
                     n["coords"][0],
                     n["coords"][1],
                     n.get("score", 0.0),
                     "AI-Vision",
                 )
-                for n in results
-            )
+                if hwnd:
+                    return hwnd
 
         except Exception as e:
             print(f"[VLM Strategy] Critical Error: {e}")
-            return False
+            return None
+
+        return None
 
     def get_debug_frame(self) -> MatLike | None:
-        """Retrieve the AI-generated perception map with coordinate markers."""
+        """Retrieve the last AI perception frame."""
         return self.last_perception_viz
 
 
 class CVStrategy(LaunchStrategy):
-    """Ground applications using Template Matching and OCR."""
+    """Ground applications using Template Matching and OCR.
+
+    Attributes:
+        engine: The Computer Vision engine for template and text matching.
+
+    """
 
     def __init__(self) -> None:
-        """Initialize the CV engine with the system Tesseract path."""
+        """Initialize the CV engine with centralized Tesseract path."""
         self.engine = CVGroundingEngine(tesseract_path=TESS_PATH)
 
-    def launch(self) -> bool:
-        """Locate elements via icon matching or OCR and attempt launch.
-
-        Use in-memory screenshots to perform multi-pass detection.
-        """
+    def launch(self) -> int | None:
+        """Locate elements via icon/text matching and attempt launch."""
         screenshot_img = pyautogui.screenshot()
-
         try:
-            # 1. Locate elements using the CV engine
             results = self.engine.locate_elements(
                 screenshot=screenshot_img,
                 icon_image=ICON_PATH,
                 text_query=OPENCV_TEXT_QUERY,
             )
-
-            # 2. Prioritize high-confidence matches
             results.sort(key=lambda c: c.score, reverse=True)
 
-            # 3. Iterate through matches
-            return any(_verify_and_launch(n.x, n.y, n.score, "CV") for n in results)
+            for n in results:
+                hwnd = _verify_and_launch(n.x, n.y, n.score, "CV")
+                if hwnd:
+                    return hwnd
 
         except Exception as e:
             print(f"[CV Strategy] Critical Error: {e}")
-            return False
+            return None
+
+        return None
 
     def get_debug_frame(self) -> MatLike | None:
-        """Retrieve the CV debug frame containing detection overlays."""
+        """Retrieve the last CV grounding debug frame."""
         return self.engine.last_debug_frame
 
 
 class HybridCVFirstStrategy(LaunchStrategy):
-    """Attempt grounding via CV first, falling back to VLM on failure."""
+    """Attempt grounding via CV first, falling back to VLM on failure.
+
+    Attributes:
+        cv: Instance of the CV-based perception strategy.
+        vlm: Instance of the VLM-based perception strategy.
+
+    """
 
     def __init__(self) -> None:
-        """Initialize both CV and VLM perception engines."""
+        """Initialize both CV and VLM engines."""
         self.cv = CVStrategy()
         self.vlm = VLMStrategy()
         self._last_used_strategy: LaunchStrategy | None = None
 
-    def launch(self) -> bool:
+    def launch(self) -> int | None:
         """Execute CV launch and fallback to VLM if unsuccessful."""
         self._last_used_strategy = self.cv
-        if self.cv.launch():
-            return True
+        hwnd = self.cv.launch()
+        if hwnd:
+            return hwnd
 
         print("[HYBRID] CV failed. Triggering VLM fallback...")
         self._last_used_strategy = self.vlm
         return self.vlm.launch()
 
     def get_debug_frame(self) -> MatLike | None:
-        """Retrieve the debug frame from the most recently attempted strategy."""
+        """Retrieve the debug frame from the most recently active engine."""
         return (
             self._last_used_strategy.get_debug_frame()
             if self._last_used_strategy
@@ -244,26 +254,33 @@ class HybridCVFirstStrategy(LaunchStrategy):
 
 
 class HybridVLMFirstStrategy(LaunchStrategy):
-    """Attempt grounding via VLM first, falling back to CV on failure."""
+    """Attempt grounding via VLM first, falling back to CV on failure.
+
+    Attributes:
+        vlm: Instance of the VLM-based perception strategy.
+        cv: Instance of the CV-based perception strategy.
+
+    """
 
     def __init__(self) -> None:
-        """Initialize both VLM and CV perception engines."""
+        """Initialize both VLM and CV engines."""
         self.vlm = VLMStrategy()
         self.cv = CVStrategy()
         self._last_used_strategy: LaunchStrategy | None = None
 
-    def launch(self) -> bool:
+    def launch(self) -> int | None:
         """Execute VLM launch and fallback to CV if unsuccessful."""
         self._last_used_strategy = self.vlm
-        if self.vlm.launch():
-            return True
+        hwnd = self.vlm.launch()
+        if hwnd:
+            return hwnd
 
         print("[HYBRID] VLM failed. Triggering CV fallback...")
         self._last_used_strategy = self.cv
         return self.cv.launch()
 
     def get_debug_frame(self) -> MatLike | None:
-        """Retrieve the debug frame from the most recently attempted strategy."""
+        """Retrieve the debug frame from the most recently active engine."""
         return (
             self._last_used_strategy.get_debug_frame()
             if self._last_used_strategy

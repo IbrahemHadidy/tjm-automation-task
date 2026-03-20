@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from cv_solution.constants import ICON_MAX_WIDTH, ICON_MIN_WIDTH
+from cv_strategy.constants import ICON_MAX_WIDTH, ICON_MIN_WIDTH
 
 if TYPE_CHECKING:
     from cv2.typing import MatLike

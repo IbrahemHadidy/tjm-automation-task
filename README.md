@@ -44,38 +44,41 @@ While the example task targets Notepad, the design focuses on building grounding
 
 ---
 
-## Getting Started
+## Prerequisites
 
-### Quick Run (Default: OpenCV)
+This project is designed for **Windows 10/11**. The environment is fully managed via a bootstrap script, meaning **you do not need to have Python pre-installed.**
 
-Before running any demos, ensure your local environment is up-to-date and all packages are installed:
+- **Internet Connection:** Required for the initial setup to fetch the isolated Python toolchain and project dependencies.
+- **Tesseract OCR:** Required for the Computer Vision grounding engine.
+  - [Download Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) and ensure the installation path matches `TESSERACT_PATH` in your `.env`.
+- **Gemini API Key:** Required for VLM-based grounding modes (Gemini 2.0).
 
-```bash
-uv sync
-```
+---
 
-Run the core automation demo using the **OpenCV grounding engine**:
+## Quick Run & Bootstrapping
 
-```bash
-uv run notepad-cv
-```
+To ensure a consistent, zero-footprint execution environment, the project uses an automated bootstrap process to eliminate manual environment configuration.
 
-### Run with the VLM Engine
+1. **One-Click Provisioning:** Run **`setup.bat`**.
+   - The script detects if the `uv` package manager is present.
+   - If missing, it **auto-installs `uv`** and updates the session path.
+   - It then **automatically downloads the required Python 3.14 toolchain** and synchronizes all dependencies into a locked virtual environment.
+2. **Launch:** Execute the batch file corresponding to your desired mode (see the table below).
+3. **Permissions:** Click **Yes** if the Windows UAC prompt appears. This is required for the `BlockInput` safety feature and high-precision hardware-level mouse control.
 
-To run the same workflow using the **Vision-Language Model (VLM) engine**, ensure you have configured your `.env` file with a valid `GEMINI_API_KEY`, then run:
+### Entry Point Reference
 
-```bash
-uv run notepad-vlm
-```
+| Batch File                      | Engine Mode       | Primary Use Case                                                     |
+|---------------------------------|-------------------|----------------------------------------------------------------------|
+| **`setup.bat`**                 | **Bootstrap**     | **Run first.** Provisions Python, `uv`, and all locked dependencies. |
+| **`run_notepad_vlm.bat`**       | AI (VLM)          | Advanced visual reasoning to locate icons via Gemini.                |
+| **`run_notepad_cv_first.bat`**  | Hybrid            | Standard mode: CV primary with VLM fallback.                         |
+| **`run_notepad_vlm_first.bat`** | Hybrid            | Testing mode: VLM primary with CV fallback.                          |
+| **`run_cv_lab.bat`**            | Diagnostic GUI    | Tuning OpenCV thresholds and multiscale factors.                     |
+| **`run_vlm_lab.bat`**           | Diagnostic GUI    | Validating AI grounding coordinates and prompts.                     |
+| **`run_fsm_telemetry.bat`**     | FSM Viewer        | Visualizes execution timelines, screenshots, and FSM states.         |
 
-### Hybrid Strategy (Optional)
-
-You can also test the **hybrid detection strategies**, where one engine acts as a fallback for the other:
-
-```bash
-uv run notepad-cv-first   # Try OpenCV first, fall back to VLM
-uv run notepad-vlm-first  # Try VLM first, fall back to OpenCV
-```
+> **Note on Permissions:** All execution scripts automatically request Administrative privileges. This is required for the `BlockInput` safety feature and hardware-level mouse control.
 
 ### Execution Commands
 
@@ -84,6 +87,7 @@ uv run notepad-vlm-first  # Try VLM first, fall back to OpenCV
 | `uv sync`                  | Sync project dependencies and environment                |
 | `uv run start-vlm`         | Launch the Vision-Language Model Diagnostic Lab          |
 | `uv run start-cv`          | Launch the OpenCV/OCR Grounding Diagnostic Lab           |
+| `uv run fsm-telemetry`     | Launch the FSM Telemetry Manifest Viewer                 |
 | `uv run notepad-cv`        | Run the standard Notepad automation using the CV engine  |
 | `uv run notepad-vlm`       | Run the standard Notepad automation using the VLM engine |
 | `uv run notepad-cv-first`  | Attempt CV detection first, fall back to VLM if it fails |
@@ -109,9 +113,9 @@ uv run notepad-vlm-first  # Try VLM first, fall back to OpenCV
 The project is organized around two complementary grounding engines — an OpenCV-based perception pipeline and a vision-language model (VLM) — and a shared core for automation, screenshot management, and state orchestration.
 
 1. **ScreenshotService** [(`src/screenshot_service.py`)](src/screenshot_service.py) — Manage workspace state (minimize/restore) and capture high-DPI desktop/app states.
-2. **Grounding Engines** ([`src/vlm_solution/engine.py`](src/vlm_solution/engine.py), [`src/cv_solution/engine.py`](src/cv_solution/engine.py)) — Translate high-level intent into screen coordinates using either AI reasoning or traditional CV+OCR fusion.
+2. **Grounding Engines** ([`src/vlm_strategy/engine.py`](src/vlm_strategy/engine.py), [`src/cv_strategy/engine.py`](src/cv_strategy/engine.py)) — Translate high-level intent into screen coordinates using either AI reasoning or traditional CV+OCR fusion.
 3. **Automation Orchestration** ([`src/notepad_task.py`](src/notepad_task.py), [`src/strategies.py`](src/strategies.py)) — Drive the finite state machine for launching, typing, saving, and switching perception strategies.
-4. **Diagnostic Tooling** ([`src/vlm_solution/gui.py`](src/vlm_solution/gui.py), [`src/cv_solution/gui.py`](src/cv_solution/gui.py)) — Provide PySide-based interfaces for real-time detection debugging and coordinate verification.
+4. **Diagnostic Tooling** ([`src/vlm_strategy/gui.py`](src/vlm_strategy/gui.py), [`src/cv_strategy/gui.py`](src/cv_strategy/gui.py)) — Provide PySide-based interfaces for real-time detection debugging and coordinate verification.
 
 ---
 
@@ -134,15 +138,12 @@ Two independent detection strategies are implemented:
 
 The engines return ranked candidate coordinates representing potential UI elements.
 
-### 3. Automation Orchestration
+### 3. Automation Orchestration & UI Drivers
 
-A task controller coordinates the automation workflow:
+A strict Finite State Machine (FSM) controller coordinates the automation workflow, delegating low-level OS interactions to dedicated UI drivers:
 
-- launch detection
-- candidate validation
-- content insertion
-- file saving
-- retry handling
+- **FSM Orchestrator:** Manages the high-level lifecycle (launching, fetching, saving, retry logic) through explicit, tracked states (e.g., `INIT`, `LAUNCH`, `WRITE`, `SAVE`).
+- **Page Object Model (POM):** Low-level UI interactions are abstracted into a `NotepadDriver`. This isolates window focus, clipboard pasting, and OS-specific dialog navigation (like Windows 11 tab handling) away from the core business logic.
 
 ---
 
@@ -151,16 +152,10 @@ A task controller coordinates the automation workflow:
 ```text
 .
 ├── src/
-│   ├── vlm_solution/            # AI-Driven Grounding (VLM)
-│   │   ├── __init__.py          # Expose public API (Engine and Client)
-│   │   ├── client.py            # Communicate with Google GenAI API & parse JSON
-│   │   ├── engine.py            # Orchestrate AI detection, retries, and verification
-│   │   ├── models.py            # Define data contracts (AIDetection, UIElementNode)
-│   │   ├── prompts.py           # Store system instructions and VLM templates
-│   │   ├── utils.py             # Calculate DPI awareness and coordinate scaling
-│   │   └── gui.py               # PySide6 diagnostic interface for visualizing detections
+|   ├── assets
+|   |   └── notepad_icon.png     # Reference template for OpenCV multiscale grounding
 │   │
-│   ├── cv_solution/             # Traditional Computer Vision Grounding
+│   ├── cv_strategy/             # Traditional Computer Vision Grounding
 │   │   ├── processors/          # Specialized detection modules
 │   │   │   ├── visual.py        # Execute template matching & feature detection
 │   │   │   ├── ocr.py           # Integrate Tesseract OCR engine
@@ -171,6 +166,15 @@ A task controller coordinates the automation workflow:
 │   │   ├── models.py            # Define data structures for CV hits
 │   │   ├── utils.py             # Provide image processing helper functions
 │   │   └── gui.py               # PySide6 diagnostic interface for CV debugging
+|   |
+│   ├── vlm_strategy/            # AI-Driven Grounding (VLM)
+│   │   ├── __init__.py          # Expose public API (Engine and Client)
+│   │   ├── client.py            # Communicate with Google GenAI API & parse JSON
+│   │   ├── engine.py            # Orchestrate AI detection, retries, and verification
+│   │   ├── models.py            # Define data contracts (AIDetection, UIElementNode)
+│   │   ├── prompts.py           # Store system instructions and VLM templates
+│   │   ├── utils.py             # Calculate DPI awareness and coordinate scaling
+│   │   └── gui.py               # PySide6 diagnostic interface for visualizing detections
 │   │
 │   ├── screenshot_service.py    # Manage High-DPI screen captures and windows
 │   ├── core.py                  # Provide foundational primitives and logging
@@ -179,8 +183,16 @@ A task controller coordinates the automation workflow:
 │   ├── notepad_task.py          # Orchestrate FSM logic for the Notepad workflow
 │   └── strategies.py            # Define logic for switching VLM/CV modes
 │
+├── setup.bat                    # Bootstrap: Auto-installs uv, provisions Python 3.14, and syncs env
+├── run_fsm_telemetry.bat        # Launch FSM Telemetry Viewer (Timeline, Screenshots, Context)
+├── run_cv_lab.bat               # Launch CV engine GUI for anchor testing and grounding
+├── run_vlm_lab.bat              # Launch VLM engine GUI for prompt engineering and vision testing
+├── run_notepad_cv.bat           # Run automation using Computer Vision (OpenCV/Template) strategy
+├── run_notepad_vlm.bat          # Run automation using Vision Language Model (AI) strategy
+├── run_notepad_cv_first.bat     # Run hybrid automation: CV primary with VLM fallback
+├── run_notepad_vlm_first.bat    # Run hybrid automation: VLM primary with CV fallback
+│
 ├── pyproject.toml               # Configure build system and dependencies (uv)
-├── notepad_icon.png             # Provide template image for CV grounding
 ├── example.env                  # Provide template for environment variables
 └── .env                         # Store local secrets (API Keys)
 ```
@@ -189,18 +201,19 @@ A task controller coordinates the automation workflow:
 
 ## Libraries Used
 
-| Library                 | Purpose                                         |
-| ----------------------- | ----------------------------------------------- |
-| `pyautogui`             | Screenshot and input automation                 |
-| `pygetwindow`           | Enumerate/manage OS windows                     |
-| `pyperclip`             | Clipboard interaction for paste reliability     |
-| `requests`              | Fetch posts data                                |
-| `python-dotenv`         | Load `.env` variables                           |
-| `Pillow`                | Image manipulation (ScreenshotService)          |
-| `google.genai`          | Gemini Vision VLM API for semantic UI grounding |
-| `opencv-python`         | Template matching and image processing          |
-| `numpy`                 | Array math and geometry utilities               |
-| `pytesseract`           | OCR engine for textual passes                   |
+| Library                 | Purpose                                                                    |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `pyautogui`             | Screenshot and input automation                                            |
+| `pygetwindow`           | Enumerate/manage OS windows                                                |
+| `pyperclip`             | Clipboard interaction for paste reliability                                |
+| `requests`              | Fetch posts data                                                           |
+| `python-dotenv`         | Load `.env` variables                                                      |
+| `Pillow`                | Image manipulation (ScreenshotService)                                     |
+| `google.genai`          | Gemini Vision VLM API for semantic UI grounding                            |
+| `opencv-python`         | Template matching and image processing                                     |
+| `numpy`                 | Array math and geometry utilities                                          |
+| `pytesseract`           | OCR engine for textual passes                                              |
+| `psutil`                | Safe termination of bot-owned orphan processes without affecting user apps |
 
 ---
 
@@ -208,7 +221,7 @@ A task controller coordinates the automation workflow:
 
 The system utilizes two distinct strategies to translate high-level intent into screen coordinates. This dual-engine approach ensures robustness across different UI styles and resolutions.
 
-### 1. OpenCV Grounding Engine (CV + OCR)
+### 1. CV Grounding Engine (CV + OCR)
 
 This engine uses a "fused" approach, running visual template matching and Tesseract OCR in parallel to find both the icon and the text label.
 
@@ -399,11 +412,12 @@ flowchart TD
 
 ## Notepad Automation Workflow (Step-by-Step)
 
-### 1. Workspace Preservation & Safety
+### 1. Workspace Preservation & Dynamic Safety
 
 - **Archive Old Posts:** Before starting, the system moves any existing `.txt` results from the project directory to an `/archive` folder.
 - **Window Snapshot:** The automation captures the current state of visible windows to restore your workspace after execution.
-- **Input Lock:** Hardware input (mouse and keyboard) is programmatically blocked during the **Launch Sequence** to prevent accidental user interference.
+- **Hardware Lock:** Hardware input (mouse and keyboard) is programmatically blocked via `BlockInput` during the **Launch Sequence** to prevent accidental clicks.
+- **Dynamic Interference Watchdog:** During non-locked phases, a background watchdog tracks mouse pixel drift. If user interference is detected, the system takes a mid-run snapshot of the workspace, pauses execution until the mouse is stable for a set duration, restores the workspace, and seamlessly resumes the FSM.
 
 ---
 
@@ -418,12 +432,9 @@ flowchart TD
 
 - **Hybrid Strategy:** The system uses a multi-layered approach to find the Notepad shortcut:
   - **Primary Engine:** Attempts detection (e.g., OpenCV template matching/OCR).
-  - **Fallback Engine:** If the primary engine finds zero candidates or fails to launch, the secondary engine (Gemini Vision VLM) is automatically triggered.
-- **Launch Retry Loop:**
-  - Iterates through candidates sorted by confidence score.
-  - Performs a double-click and verifies if a window titled "Notepad" appears.
-  - The system checks for the window **6 times** (approx. 1s intervals). If it doesn't appear, it moves to the **next best candidate**.
-- **Verification:** If all candidates are exhausted, the post is logged as a `FATAL` failure and the system moves to the next post.
+  - **Fallback Engine:** If the primary engine fails, the secondary engine (Gemini Vision VLM) is automatically triggered.
+- **Launch Retry Loop:** Iterates through candidates sorted by confidence score. It performs a double-click and polls for the target window handle 6 times. If it fails, it moves to the next candidate.
+- **Surgical Masking:** Once the application is launched, the system captures the target window and isolates it onto a blacked-out background image. This creates a clean, noise-free visual artifact for downstream steps.
 
 #### C — Content Injection
 
@@ -435,27 +446,25 @@ flowchart TD
 1. **Trigger:** `Ctrl + S` opens the "Save As" dialog.
 2. **Pathing:** The system waits for the dialog handle, focuses the filename field (`Alt + N`), and pastes the absolute path: `Desktop/tjm-project/post_{id}.txt`.
 3. **Overwrite Handling:** If a "Confirm Save As" prompt appears, the system automatically sends `Alt + Y` to overwrite the existing file.
-4. **Close:** Closes the editor via `Ctrl + W` with a fallback safety close.
+4. **Retry Resiliency:** Because UI dialogs can occasionally flicker or fail to register keystrokes, the entire file-save interaction is wrapped in a retry loop with exponential backoff.
+5. **Close:** Closes the editor via `Ctrl + W` with a fallback safety close.
 
 #### E — Teardown & Observability
 
-- **Cleanup:** Closes any "Untitled" Notepad windows that failed to save.
+- **Surgical Cleanup:** Unconditionally terminates the specific Notepad process initiated by the FSM (via tracked PID), leaving the user's pre-existing Notepad windows completely untouched.
 - **Restore:** Re-opens the windows captured in the initial snapshot.
-- **Telemetry:** Finalizes the `metadata.json` and saves visual debug artifacts (if enabled) for post-run auditing.
+- **Telemetry & Replay:** Finalizes the `metadata.json` run manifest and compiles a comprehensive `.mp4` video replay of all captured screenshots and errors for post-run auditing.
 
 ---
 
-## Error Handling & Robustness
+## Error Handling, Observability & Robustness
 
-- **API Resilience:** Implemented manual retries with **exponential backoff** (1s, 2s, 4s) for data fetching to handle transient network instability.
-- **Multi-Candidate Recovery:** Grounding engines iterate through secondary matches if the primary candidate fails to launch the target application (e.g., due to a false positive or occlusion).
-- **Verification Loops:** Nested wait-logic for window activation (6 tries per candidate) and file dialogs (10 tries) to synchronize with OS-level latency.
-- **Workspace Integrity:** Guaranteed restoration of original window states and cleanup of temporary artifacts using `finally` blocks and `Path.unlink(missing_ok=True)`.
-- **Visibility Edge Cases:** Factored in partial occlusion, DPI scaling, and busy backgrounds via coordinate normalization and multi-pass CV.
-- **Overwrite Handling:** Automated detection and confirmation of "Save As" overwrite prompts.
-- **Diagnostic Logging:** Engines support callback logging; OpenCV provides real-time performance metrics per detection pass.
-- **High-DPI Awareness:** Uses `ctypes` to interface with `user32.dll` and `shcore.dll`. This forces the OS to treat the automation as "Per-Monitor Architecture-Aware," preventing coordinate drift on 4K or scaled displays.
-- **Visual Self-Correction:** The `_verify_detection` method crops a 50px margin around click sites for a second AI pass, confirming the target was actually hit before proceeding.
+- **Strict FSM Orchestration:** The core workflow is governed by a strict Finite State Machine. Every transition (e.g., `LAUNCH` to `WRITE`) resets background watchdog timers and emits structured telemetry, preventing the system from desyncing from the UI state.
+- **Granular Run Metrics & Structured JSON Logging:** Execution telemetry is managed by a `StructuredLogger` that outputs standard JSON. At the end of a run, a `RunMetrics` schema is finalized into a `metadata.json` manifest, capturing total processed counts, specific failure categories (launch vs. save failures), success rates, and exact execution timings in seconds for every FSM state.
+- **Dynamic User Interference Watchdog:** A background poller tracks user mouse drift. If the user moves the mouse to take control, the automation automatically pauses, waits for stability, and gracefully resumes without failing the run.
+- **Centralized Exponential Retry Strategy:** A higher-order `retry` function manages transient failures with exponential backoff and jitter. This is applied to network I/O, brittle UI dialogs, and the initial application launch sequence.
+- **Page Object Model (POM) Isolation:** Low-level keystrokes are abstracted away from the FSM into a `NotepadDriver`. This prevents rogue keystrokes from leaking into the OS if the target window loses focus.
+- **Surgical Process Cleanup:** Instead of blindly killing all Notepad instances, the FSM tracks the specific `bot_pid` initiated by the automation and gracefully terminates only the bot-owned process via `psutil`.
 
 ---
 
@@ -471,20 +480,22 @@ Example of detected VLM coords:
 Example of detected OpenCV coords:
 ![OpenCV Grounding GUI](screenshots/cv_ss.png)
 
-### Diagnostic GUIs
+### Diagnostic GUIs & Telemetry Viewer
 
-The project includes PySide6-based diagnostic interfaces used during development to visualize grounding results and tune detection parameters.
+The project includes PySide6-based diagnostic interfaces used to visualize grounding results, tune detection parameters, and audit historical runs. These tools are **development utilities** and are not required to run the headless automation workflow.
 
-These tools allow inspection of detected desktop elements, bounding boxes, confidence scores, and click coordinates in real time. This simplifies debugging and validation of the grounding pipelines across different desktop conditions.
+#### 1. Vision Laboratories (CV & VLM)
 
-The diagnostic GUIs were primarily used to:
+- **Live Inspection:** Toggle detection passes (LAB, Edge, etc.) and visualize bounding boxes in real-time to see what the perception engines are seeing.
+- **Threshold Hot-Swapping:** Adjust engine constants via GUI sliders to find the optimal detection thresholds for your specific wallpaper and DPI scaling.
 
-- verify icon detection accuracy
-- inspect OCR results
-- visualize candidate ranking
-- generate example screenshots for documentation
+#### 2. FSM Telemetry Dashboard (`run_fsm_telemetry.bat`)
 
-These tools are **development utilities** and are not required for running the automation workflow.
+Because the automation generates structured JSON manifests and step-by-step screenshots, a dedicated Telemetry Viewer allows for post-run auditing:
+
+- **Execution Timeline Scrubbing:** Navigate through the exact sequence of FSM states (`INIT` -> `LAUNCH` -> `WRITE`, etc.) to see exactly where a failure occurred.
+- **Rich Visualizations:** Features asynchronous background loading for step thumbnails, run-level metric summaries, and a zoomable image canvas with a magnifier tool to inspect visual artifacts and surgical masks.
+- **Video Replay Integration:** Directly launch the `.mp4` execution replay compiled by OpenCV from within the dashboard.
 
 ---
 
@@ -530,28 +541,29 @@ flowchart TD
     InteractionFail --> Release
 
     %% SAVE PHASE
-    Release --> Edit["Paste Content (Ctrl+V) & Save (Ctrl+S)"]
-    Edit --> WaitDialog["Wait for 'Save As' Window"]
+    Release --> Edit["Paste Content (Ctrl+V) & Save (Ctrl+S)"]
+    Edit --> WaitDialog["Wait for 'Save As' Window"]
 
-    WaitDialog --> DialogCheck{"Dialog Visible?"}
-    DialogCheck -->|No| Skip["Log Warning & Skip Post"]
-    DialogCheck -->|Yes| Pathing["Enter File Path & Enter"]
+    WaitDialog --> DialogCheck{"Dialog Visible?"}
+    DialogCheck -->|No| Skip["Log Warning & Skip Post"]
+    DialogCheck -->|Yes| Pathing["Enter File Path & Enter"]
 
-    Pathing --> OverwriteCheck{"'Confirm Save As' Prompt?"}
-    OverwriteCheck -->|Yes| HandleOver["Send Alt+Y (Overwrite)"]
-    OverwriteCheck -->|No| Close
-    HandleOver --> Close["Close Notepad (Ctrl+W)"]
+    Pathing --> OverwriteCheck{"'Confirm Save As' Prompt?"}
+    OverwriteCheck -->|Yes| HandleOver["Send Alt+Y (Overwrite)"]
+    OverwriteCheck -->|No| Close
+    HandleOver --> Close["Close Notepad (Ctrl+W)"]
 
-    Close --> Artifact["Save Debug Frame Artifact"]
-    Artifact --> Next["Increment Post Index"]
-    Skip --> Next
+    Close --> Artifact["Save Debug Frame Artifact"]
+    Artifact --> Next["Increment Post Index"]
+    Skip --> Next
 
-    Next -->|More| Loop
-    Next -->|Done| Cleanup["_cleanup_bot_windows (Kill Rogue Notepads)"]
+    Next -->|More| Loop
+    Next -->|Done| Cleanup["kill_bot_process_only (Terminate specific Bot PID)"]
 
-    Cleanup --> Restore["Restore User Window Snapshots"]
-    Restore --> Finalize["Monitor.finalize (Write Telemetry JSON)"]
-    Finalize --> End(["End"])
+    Cleanup --> Restore["Restore User Window Snapshots"]
+    Restore --> Video["Compile MP4 Video Replay"]
+    Video --> Finalize["Monitor.finalize (Write Telemetry JSON)"]
+    Finalize --> End(["End"])
 
     %% ---------- STYLING ----------
     classDef entry fill:#1b5e20,stroke:#66bb6a,color:#ffffff
@@ -680,16 +692,17 @@ The project includes a PySide6-based **Vision Lab** (`gui.py`) designed for real
 
 All detection logic is governed by centralized constants. Use the table below to troubleshoot specific issues:
 
-| Symptom | Targeted Adjustment |
-| :--- | :--- |
-| **Missed Icons** | Lower `TPL_COLOR_THRESHOLD` or expand `MULTISCALE_FACTORS`. |
-| **Duplicate Clicks** | Increase `NMS_RADIUS_FACTOR` or `FINAL_DEDUP_RADIUS_FACTOR`. |
-| **Weak OCR Results** | Adjust `OCR_MIN_CONFIDENCE` or `OCR_RECOVERY_THRESHOLD`. |
-| **False Positives** | Tighten `GEOM_RATIO_BONUS_WEIGHT` to enforce stricter shapes. |
+| Symptom              | Targeted Adjustment                                           |
+|----------------------|---------------------------------------------------------------|
+| **Missed Icons**     | Lower `TPL_COLOR_THRESHOLD` or expand `MULTISCALE_FACTORS`.   |
+| **Duplicate Clicks** | Increase `NMS_RADIUS_FACTOR` or `FINAL_DEDUP_RADIUS_FACTOR`.  |
+| **Weak OCR Results** | Adjust `OCR_MIN_CONFIDENCE` or `OCR_RECOVERY_THRESHOLD`.      |
+| **False Positives**  | Tighten `GEOM_RATIO_BONUS_WEIGHT` to enforce stricter shapes. |
 
 ### 3. Visual Observability & Safety
 
 - **Artifact Snapshots:** Upon a `FATAL` error, the `RunMonitor` saves a high-contrast debug image to `logs/run_id/errors/` with rendered bounding boxes and confidence scores.
+- **Video Replays:** The system automatically stitches step-by-step screenshots into an `execution_replay.mp4` using OpenCV’s `VideoWriter`, allowing developers to watch the bot's decision-making process in real-time.
 - **Telemetry:** Check `metadata.json` in the log folder for execution times, engine scores, and DPI awareness status.
 - **Hardware Safety:** If the mouse is locked via `BlockInput`, the system automatically releases the lock upon task timeout or failure.
 

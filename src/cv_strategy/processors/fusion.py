@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
-from cv_solution.constants import (
+from cv_strategy.constants import (
     FINAL_DEDUP_RADIUS_FACTOR,
     FUSION_DISTANCE_FACTOR,
     GEOM_BASE_SCORE_WEIGHT,
@@ -19,12 +19,12 @@ from cv_solution.constants import (
     MIN_DEDUPE_RADIUS_FACTOR,
     NMS_RADIUS_FACTOR,
 )
-from cv_solution.models import Candidate, DetectionMethod
+from cv_strategy.models import Candidate, DetectionMethod
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from cv_solution.models import GroundingConfig
+    from cv_strategy.models import GroundingConfig
 
 
 class FusionProcessor:

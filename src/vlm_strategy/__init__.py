@@ -5,10 +5,10 @@ This package provides an orchestration layer for using Vision Language Models
 language instructions.
 """
 
-from vlm_solution.client import AiClient
-from vlm_solution.engine import AiGroundingEngine
-from vlm_solution.models import AIDetection, UIElementNode
-from vlm_solution.utils import AiImageUtils
+from vlm_strategy.client import AiClient
+from vlm_strategy.engine import AiGroundingEngine
+from vlm_strategy.models import AIDetection, UIElementNode
+from vlm_strategy.utils import AiImageUtils
 
 __all__ = [
     "AIDetection",

@@ -3,6 +3,7 @@
         "charliermarsh.ruff",
         "mikestead.dotenv",
         "charliermarsh.ruff",
-        "anysphere.cursorpyright"
+        "anysphere.cursorpyright",
+        "mermaidchart.vscode-mermaid-chart",
     ]
 }

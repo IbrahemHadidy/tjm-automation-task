@@ -12,12 +12,12 @@ import cv2
 import numpy as np
 import pytesseract
 
-from cv_solution.constants import RECOVERY_QUEUE_LIMIT
-from cv_solution.models import Candidate, DetectionMethod, GroundingConfig, PerfStat
-from cv_solution.processors.fusion import FusionProcessor
-from cv_solution.processors.ocr import OCRProcessor
-from cv_solution.processors.visual import VisualProcessor
-from cv_solution.utils import ImageUtils, set_high_dpi_awareness
+from cv_strategy.constants import RECOVERY_QUEUE_LIMIT
+from cv_strategy.models import Candidate, DetectionMethod, GroundingConfig, PerfStat
+from cv_strategy.processors.fusion import FusionProcessor
+from cv_strategy.processors.ocr import OCRProcessor
+from cv_strategy.processors.visual import VisualProcessor
+from cv_strategy.utils import ImageUtils, set_high_dpi_awareness
 
 if TYPE_CHECKING:
     from collections.abc import Callable

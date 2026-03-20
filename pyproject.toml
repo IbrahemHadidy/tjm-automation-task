@@ -7,6 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
   "google-genai>=1.60.0",
   "opencv-python-headless>=4.13.0.90",
+  "psutil>=7.2.2",
   "pyautogui>=0.9.54",
   "pygetwindow>=0.0.9",
   "pyperclip>=1.11.0",
@@ -21,18 +22,20 @@ dev = ["pre-commit>=4.5.0", "pyright>=1.1.407", "ruff>=0.14.9"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ['cv_solution', 'vlm_solution']
+packages = ['cv_strategy', 'vlm_strategy']
 
 [tool.uv]
 package = true
 
 [project.scripts]
-start-vlm = "vlm_solution.gui:run"
-start-cv = "cv_solution.gui:run"
+vlm-lab = "vlm_strategy.gui:run"
+cv-lab = "cv_strategy.gui:run"
+fsm-telemetry = "fsm_telemetry:run"
 notepad-vlm = "main:run_vlm"
 notepad-cv = "main:run_cv"
 notepad-cv-first = "main:run_hybrid_cv_first"
 notepad-vlm-first = "main:run_hybrid_vlm_first"
+
 
 [tool.pyright]
 typeCheckingMode = "basic"

@@ -12,13 +12,13 @@ from typing import TYPE_CHECKING
 
 import cv2
 
-from cv_solution.constants import (
+from cv_strategy.constants import (
     CANNY_HIGH_THRESHOLD,
     CANNY_LOW_THRESHOLD,
     DEFAULT_ICON_SIZE,
     TASKBAR_HEIGHT_PX,
 )
-from cv_solution.models import PerfStat
+from cv_strategy.models import PerfStat
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
     from cv2.typing import MatLike
 
-    from cv_solution.models import Candidate, GroundingConfig
+    from cv_strategy.models import Candidate, GroundingConfig
 
 logger = logging.getLogger(__name__)
 
