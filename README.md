@@ -434,7 +434,6 @@ flowchart TD
   - **Primary Engine:** Attempts detection (e.g., OpenCV template matching/OCR).
   - **Fallback Engine:** If the primary engine fails, the secondary engine (Gemini Vision VLM) is automatically triggered.
 - **Launch Retry Loop:** Iterates through candidates sorted by confidence score. It performs a double-click and polls for the target window handle 6 times. If it fails, it moves to the next candidate.
-- **Surgical Masking:** Once the application is launched, the system captures the target window and isolates it onto a blacked-out background image. This creates a clean, noise-free visual artifact for downstream steps.
 
 #### C — Content Injection
 
@@ -475,10 +474,10 @@ flowchart TD
 Example of detected VLM coords:
 ![VLM Grounding GUI](screenshots/vlm_ss.png)
 
-### OpenCV Grounding GUI
+### Vision Grounding GUI
 
-Example of detected OpenCV coords:
-![OpenCV Grounding GUI](screenshots/cv_ss.png)
+Example of detected OpenCV + OCR coords:
+![Vision Grounding GUI](screenshots/cv_ss.png)
 
 ### Diagnostic GUIs & Telemetry Viewer
 
@@ -503,85 +502,83 @@ Because the automation generates structured JSON manifests and step-by-step scre
 
 ```mermaid
 flowchart TD
-    Start(["Start"]) --> Init["Prepare Env: Archive Old Posts & Snapshot Windows"]
-    Init --> Fetch["Fetch Posts (Retry 3x with Backoff)"]
+    Start(["Start"]) --> Init["Initialize Environment"]
+    Init --> Prep["Archive Outputs + Snapshot User Windows"]
+    Prep --> Fetch["Fetch Posts (Retry + Backoff)"]
 
-    Fetch --> Success{"Fetch OK?"}
-    Success -->|No| Cleanup
-    Success -->|Yes| Loop["For each post in posts (Max 10)"]
+    Fetch --> FetchOK{"Fetch Successful?"}
+    FetchOK -->|No| Cleanup
+    FetchOK -->|Yes| Loop["Iterate Posts (Max 10)"]
 
     %% LAUNCH PHASE
-    Loop --> Block["BlockInput(True) - Lock Keyboard/Mouse"]
-    Block --> WinM["Minimize All (Win+M)"]
+    Loop --> DesktopPrep["Prepare Desktop (ScreenshotService)"]
 
-    subgraph Perception ["Perception Strategy"]
+    subgraph Perception ["Perception (Strategy-Based Grounding)"]
         direction TB
-        Attempt1["Primary Engine Call"] --> Results1{"Found Matches?"}
-        Results1 -->|No| Hybrid{"Hybrid Strategy?"}
-        Hybrid -->|Yes| Attempt2["Fallback Engine Call"]
-        Hybrid -->|No| FailPerception["Return Fail"]
-        Results1 -->|Yes| CandList["Sort Candidate List"]
-        Attempt2 --> CandList
+        Attempt1["Primary Strategy (CV or VLM)"] --> Found{"Candidates Found?"}
+        Found -->|No| Hybrid{"Fallback Strategy Available?"}
+        Hybrid -->|Yes| Attempt2["Fallback Strategy"]
+        Hybrid -->|No| PerceptionFail["Perception Failed"]
+        Found -->|Yes| Rank["Rank Candidates (Score + Heuristics)"]
+        Attempt2 --> Rank
     end
 
-    WinM --> Attempt1
+    DesktopPrep --> Attempt1
 
-    subgraph Interaction ["Interaction Loop"]
+    %% INTERACTION PHASE
+    subgraph Interaction ["Interaction (Candidate Execution Loop)"]
         direction TB
-        Pick["Pick Next Best Candidate"] --> DClick["Double-click Coords"]
-        DClick --> Verify{"Notepad Active? (6s Timeout)"}
+        Pick["Select Next Candidate"] --> Lock["Acquire Input Lock (OS-level)"]
+        Lock --> Click["Double-click Target Coordinates"]
+        Click --> Unlock["Release Input Lock (finally)"]
+        Unlock --> Verify{"Window Detected? (Polling)"}
         Verify -->|No| More{"More Candidates?"}
         More -->|Yes| Pick
-        More -->|No| InteractionFail["Interaction Failed"]
+        More -->|No| InteractionFail["Launch Failed"]
     end
 
-    CandList --> Pick
+    Rank --> Pick
 
-    Verify -->|Yes| Release["BlockInput(False) - Unlock"]
-    InteractionFail --> Release
+    Verify -->|Yes| DriverInit["Initialize Notepad Driver"]
 
-    %% SAVE PHASE
-    Release --> Edit["Paste Content (Ctrl+V) & Save (Ctrl+S)"]
-    Edit --> WaitDialog["Wait for 'Save As' Window"]
+    %% WRITE + SAVE PHASE
+    DriverInit --> Write["Write Post Content"]
+    Write --> Save["Save File (Retry Wrapped)"]
 
-    WaitDialog --> DialogCheck{"Dialog Visible?"}
-    DialogCheck -->|No| Skip["Log Warning & Skip Post"]
-    DialogCheck -->|Yes| Pathing["Enter File Path & Enter"]
+    Save --> SaveOK{"Save Successful?"}
+    SaveOK -->|No| SaveFail["Save Failed"]
+    SaveOK -->|Yes| Close["Close Notepad"]
 
-    Pathing --> OverwriteCheck{"'Confirm Save As' Prompt?"}
-    OverwriteCheck -->|Yes| HandleOver["Send Alt+Y (Overwrite)"]
-    OverwriteCheck -->|No| Close
-    HandleOver --> Close["Close Notepad (Ctrl+W)"]
+    Close --> Metrics["Update Metrics + Artifacts"]
 
-    Close --> Artifact["Save Debug Frame Artifact"]
-    Artifact --> Next["Increment Post Index"]
-    Skip --> Next
+    %% LOOP CONTROL
+    Metrics --> Next["Increment Post Index"]
+    SaveFail --> Next
+    InteractionFail --> Next
+    PerceptionFail --> Next
 
-    Next -->|More| Loop
-    Next -->|Done| Cleanup["kill_bot_process_only (Terminate specific Bot PID)"]
+    Next -->|More Posts| Loop
+    Next -->|Done| Cleanup["Cleanup Bot Windows + Processes"]
 
-    Cleanup --> Restore["Restore User Window Snapshots"]
-    Restore --> Video["Compile MP4 Video Replay"]
-    Video --> Finalize["Monitor.finalize (Write Telemetry JSON)"]
-    Finalize --> End(["End"])
+    %% FINALIZATION
+    Cleanup --> Restore["Restore User Workspace"]
+    Restore --> Video["Compile Run Video"]
+    Video --> Finalize["Persist Metrics + Telemetry"]
+    Finalize --> End(["End"])
 
-    %% ---------- STYLING ----------
+    %% STYLING
     classDef entry fill:#1b5e20,stroke:#66bb6a,color:#ffffff
     classDef action fill:#0d47a1,stroke:#64b5f6,color:#ffffff
     classDef decision fill:#4a148c,stroke:#ba68c8,color:#ffffff
     classDef safety fill:#f57f17,stroke:#fbc02d,color:#ffffff
     classDef terminal fill:#b71c1c,stroke:#ef9a9a,color:#ffffff
-    classDef warn fill:#ff6f00,stroke:#ffe0b2,color:#ffffff
 
-    %% Assigning Classes
     class Start,End,Finalize entry
-    class Init,Fetch,WinM,Attempt1,Attempt2,CandList,Pick,DClick,Edit,WaitDialog,Pathing,HandleOver,Close,Artifact,Next,Cleanup,Restore action
-    class Success,Results1,Hybrid,Verify,More,DialogCheck,OverwriteCheck decision
-    class Block,Release safety
-    class FailPerception,InteractionFail terminal
-    class Skip warn
+    class Init,Prep,Fetch,DesktopPrep,Attempt1,Attempt2,Rank,Pick,Click,Write,Save,Close,Metrics,Next,Cleanup,Restore,Video action
+    class FetchOK,Found,Hybrid,Verify,More,SaveOK decision
+    class Lock,Unlock safety
+    class PerceptionFail,InteractionFail,SaveFail terminal
 
-    %% Subgraph Styling
     style Perception fill:#263238,stroke:#00e5ff,stroke-width:2px,color:#fff
     style Interaction fill:#263238,stroke:#00e5ff,stroke-width:2px,color:#fff
 ```
@@ -692,12 +689,13 @@ The project includes a PySide6-based **Vision Lab** (`gui.py`) designed for real
 
 All detection logic is governed by centralized constants. Use the table below to troubleshoot specific issues:
 
-| Symptom              | Targeted Adjustment                                           |
-|----------------------|---------------------------------------------------------------|
-| **Missed Icons**     | Lower `TPL_COLOR_THRESHOLD` or expand `MULTISCALE_FACTORS`.   |
-| **Duplicate Clicks** | Increase `NMS_RADIUS_FACTOR` or `FINAL_DEDUP_RADIUS_FACTOR`.  |
-| **Weak OCR Results** | Adjust `OCR_MIN_CONFIDENCE` or `OCR_RECOVERY_THRESHOLD`.      |
-| **False Positives**  | Tighten `GEOM_RATIO_BONUS_WEIGHT` to enforce stricter shapes. |
+| Symptom              | Targeted Adjustment                                                                      |
+|----------------------|------------------------------------------------------------------------------------------|
+| **Missed Icons**     | Lower `TPL_COLOR_THRESHOLD`, `TPL_GRAY_THRESHOLD`, or expand `MULTISCALE_FACTORS`.       |
+| **Duplicate Clicks** | Increase `NMS_RADIUS_FACTOR` or `FINAL_DEDUP_RADIUS_FACTOR`.                             |
+| **Weak OCR Results** | Adjust `OCR_MIN_CONFIDENCE` or `OCR_RECOVERY_THRESHOLD`.                                 |
+| **False Positives**  | Reduce `GEOM_RATIO_BONUS_WEIGHT` or increase relevant template thresholds.               |
+| **Slow Detection**   | Reduce `MAX_TEMPLATE_HITS`, lower `RECOVERY_QUEUE_LIMIT`, or limit `MULTISCALE_FACTORS`. |
 
 ### 3. Visual Observability & Safety
 

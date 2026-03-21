@@ -315,7 +315,7 @@ class GroundingLab(QMainWindow):
     def __init__(self) -> None:
         """Initialize the main window and setup UI components."""
         super().__init__()
-        self.setWindowTitle("VISION GROUNDING ENGINE v0.2")
+        self.setWindowTitle("VISION GROUNDING LAB")
         self.setMinimumSize(1400, 900)
         self.setStyleSheet(GLOBAL_STYLE)
         self.icon_path: str | None = None

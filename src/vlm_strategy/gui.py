@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
 from vlm_strategy.engine import AiGroundingEngine, UIElementNode
 
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
@@ -232,7 +233,7 @@ class GroundingLab(QMainWindow):
         self.ref_image_path: str | None = None
         self.node_data: list = []
 
-        self.setWindowTitle("AI GROUNDING LAB v0.1")
+        self.setWindowTitle("AI GROUNDING LAB")
         self.resize(1400, 900)
         self._setup_ui()
 
