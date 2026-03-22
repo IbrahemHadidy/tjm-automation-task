@@ -68,22 +68,23 @@ To ensure a consistent, zero-footprint execution environment, the project uses a
 
 ### Entry Point Reference
 
-| Batch File                      | Engine Mode       | Primary Use Case                                                     |
-|---------------------------------|-------------------|----------------------------------------------------------------------|
-| **`setup.bat`**                 | **Bootstrap**     | **Run first.** Provisions Python, `uv`, and all locked dependencies. |
-| **`run_notepad_vlm.bat`**       | AI (VLM)          | Advanced visual reasoning to locate icons via Gemini.                |
-| **`run_notepad_cv_first.bat`**  | Hybrid            | Standard mode: CV primary with VLM fallback.                         |
-| **`run_notepad_vlm_first.bat`** | Hybrid            | Testing mode: VLM primary with CV fallback.                          |
-| **`run_cv_lab.bat`**            | Diagnostic GUI    | Tuning OpenCV thresholds and multiscale factors.                     |
-| **`run_vlm_lab.bat`**           | Diagnostic GUI    | Validating AI grounding coordinates and prompts.                     |
-| **`run_fsm_telemetry.bat`**     | FSM Viewer        | Visualizes execution timelines, screenshots, and FSM states.         |
+| Batch File                      | Engine Mode     | Primary Use Case                                                     |
+| ------------------------------- | --------------- | -------------------------------------------------------------------- |
+| **`setup.bat`**                 | **Bootstrap**   | **Run first.** Provisions Python, `uv`, and all locked dependencies. |
+| **`run_notepad_cv.bat`**        | CV (OpenCV/OCR) | Fast local detection using template matching and OCR.                |
+| **`run_notepad_vlm.bat`**       | AI (VLM)        | Advanced visual reasoning to locate icons via Gemini.                |
+| **`run_notepad_cv_first.bat`**  | Hybrid          | Standard mode: CV primary with VLM fallback.                         |
+| **`run_notepad_vlm_first.bat`** | Hybrid          | Testing mode: VLM primary with CV fallback.                          |
+| **`run_cv_lab.bat`**            | Diagnostic GUI  | Tuning OpenCV thresholds and multiscale factors.                     |
+| **`run_vlm_lab.bat`**           | Diagnostic GUI  | Validating AI grounding coordinates and prompts.                     |
+| **`run_fsm_telemetry.bat`**     | FSM Viewer      | Visualizes execution timelines, screenshots, and FSM states.         |
 
 > **Note on Permissions:** All execution scripts automatically request Administrative privileges. This is required for the `BlockInput` safety feature and hardware-level mouse control.
 
 ### Execution Commands
 
 | Command                    | Action                                                   |
-|----------------------------|----------------------------------------------------------|
+| -------------------------- | -------------------------------------------------------- |
 | `uv sync`                  | Sync project dependencies and environment                |
 | `uv run start-vlm`         | Launch the Vision-Language Model Diagnostic Lab          |
 | `uv run start-cv`          | Launch the OpenCV/OCR Grounding Diagnostic Lab           |
@@ -201,19 +202,19 @@ A strict Finite State Machine (FSM) controller coordinates the automation workfl
 
 ## Libraries Used
 
-| Library                 | Purpose                                                                    |
-| ----------------------- | -------------------------------------------------------------------------- |
-| `pyautogui`             | Screenshot and input automation                                            |
-| `pygetwindow`           | Enumerate/manage OS windows                                                |
-| `pyperclip`             | Clipboard interaction for paste reliability                                |
-| `requests`              | Fetch posts data                                                           |
-| `python-dotenv`         | Load `.env` variables                                                      |
-| `Pillow`                | Image manipulation (ScreenshotService)                                     |
-| `google.genai`          | Gemini Vision VLM API for semantic UI grounding                            |
-| `opencv-python`         | Template matching and image processing                                     |
-| `numpy`                 | Array math and geometry utilities                                          |
-| `pytesseract`           | OCR engine for textual passes                                              |
-| `psutil`                | Safe termination of bot-owned orphan processes without affecting user apps |
+| Library         | Purpose                                                                    |
+| --------------- | -------------------------------------------------------------------------- |
+| `pyautogui`     | Screenshot and input automation                                            |
+| `pygetwindow`   | Enumerate/manage OS windows                                                |
+| `pyperclip`     | Clipboard interaction for paste reliability                                |
+| `requests`      | Fetch posts data                                                           |
+| `python-dotenv` | Load `.env` variables                                                      |
+| `Pillow`        | Image manipulation (ScreenshotService)                                     |
+| `google.genai`  | Gemini Vision VLM API for semantic UI grounding                            |
+| `opencv-python` | Template matching and image processing                                     |
+| `numpy`         | Array math and geometry utilities                                          |
+| `pytesseract`   | OCR engine for textual passes                                              |
+| `psutil`        | Safe termination of bot-owned orphan processes without affecting user apps |
 
 ---
 
@@ -690,7 +691,7 @@ The project includes a PySide6-based **Vision Lab** (`gui.py`) designed for real
 All detection logic is governed by centralized constants. Use the table below to troubleshoot specific issues:
 
 | Symptom              | Targeted Adjustment                                                                      |
-|----------------------|------------------------------------------------------------------------------------------|
+| -------------------- | ---------------------------------------------------------------------------------------- |
 | **Missed Icons**     | Lower `TPL_COLOR_THRESHOLD`, `TPL_GRAY_THRESHOLD`, or expand `MULTISCALE_FACTORS`.       |
 | **Duplicate Clicks** | Increase `NMS_RADIUS_FACTOR` or `FINAL_DEDUP_RADIUS_FACTOR`.                             |
 | **Weak OCR Results** | Adjust `OCR_MIN_CONFIDENCE` or `OCR_RECOVERY_THRESHOLD`.                                 |
