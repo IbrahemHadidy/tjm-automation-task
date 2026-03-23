@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 import cv2
 
 from cv_strategy.constants import (
+    BGR_TO_GRAY,
+    BGR_TO_LAB,
     CANNY_HIGH_THRESHOLD,
     CANNY_LOW_THRESHOLD,
     COLOR_FUSED,
@@ -17,6 +19,7 @@ from cv_strategy.constants import (
     COLOR_VISUAL,
     DEFAULT_ICON_SIZE,
     INNER_THICKNESS,
+    LAB_TO_BGR,
     OUTER_THICKNESS,
     TASKBAR_HEIGHT_PX,
     VIZ_MARKER_SIZE,
@@ -51,6 +54,49 @@ class ImageUtils:
         return img[0 : h - TASKBAR_HEIGHT_PX, 0:w]
 
     @staticmethod
+    def crop_around_anchor(
+        img: MatLike,
+        candidate: Candidate,
+        target_size: int,
+    ) -> MatLike:
+        """Crop a square region around a visual anchor candidate.
+
+        This function is used for targeted OCR recovery, providing a
+        localized region of interest centered on the candidate.
+
+        Args:
+            img: Full-screen image in BGR format.
+            candidate: The anchor candidate around which to crop.
+            target_size: Size in pixels of the square crop (width = height).
+
+        Returns:
+            Cropped image region centered on the candidate, clipped to
+            remain within image boundaries.
+
+        Notes:
+            - If the candidate has a `bbox`, the center is computed from it;
+              otherwise, uses candidate `(x, y)` coordinates.
+            - Ensures the crop does not exceed image borders.
+
+        """
+        h, w = img.shape[:2]
+
+        # Determine center of crop
+        if hasattr(candidate, "bbox") and candidate.bbox:
+            bx, by, bw, bh = candidate.bbox
+            cx, cy = bx + bw // 2, by + bh // 2
+        else:
+            cx, cy = candidate.x, candidate.y
+
+        half = target_size // 2
+        x1 = max(0, cx - half)
+        y1 = max(0, cy - half)
+        x2 = min(w, cx + half)
+        y2 = min(h, cy + half)
+
+        return img[y1:y2, x1:x2]
+
+    @staticmethod
     def enhance_contrast(img: MatLike) -> MatLike:
         """Apply CLAHE enhancement to improve recognition in low-contrast scenes.
 
@@ -68,12 +114,12 @@ class ImageUtils:
             clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
             return clahe.apply(img)
         if len(img.shape) == 3 and img.shape[2] == 3:
-            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+            lab = cv2.cvtColor(img, BGR_TO_LAB)
             channels = list(cv2.split(lab))
             clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
             channels[0] = clahe.apply(channels[0])
             limg = cv2.merge(channels)
-            return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+            return cv2.cvtColor(limg, LAB_TO_BGR)
         return img
 
     @staticmethod
@@ -94,7 +140,7 @@ class ImageUtils:
         min_w = config.min_icon_width
         max_w = config.max_icon_width
 
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(roi, BGR_TO_GRAY)
         edges = cv2.Canny(gray, CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD)
         contours, _ = cv2.findContours(
             edges,
@@ -199,11 +245,18 @@ class ImageUtils:
 
             main_label = f"#{i + 1} {method_str} [{score_val}]"
             sub_label = f"TEXT: '{detected_text}'" if detected_text else ""
-            audit_label = (
-                f"V({c.img_score:.2f}) + T({c.txt_score:.2f})"
-                if "FUSED" in method_str
-                else ""
-            )
+
+            audit_label = ""
+            if "FUSED" in method_str:
+                # Extract the specific visual method used (e.g., tpl_edge, tpl_color)
+                v_source = c.extra.get("visual_source")
+                if v_source is not None:
+                    v_name = getattr(v_source, "value", str(v_source))
+                else:
+                    v_name = "V"
+
+                # Format: tpl_edge(0.85) + T(0.92)
+                audit_label = f"{v_name}({c.img_score:.2f}) + T({c.txt_score:.2f})"
 
             # 5. Vertical Positioning
             is_at_top = c.y < 120

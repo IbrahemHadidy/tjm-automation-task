@@ -22,7 +22,6 @@ class DetectionMethod(StrEnum):
         LAB: Perceptual color space matching (lighting robust).
         EDGE: Canny edge-based structural matching.
         GRAY: Grayscale intensity matching.
-        ORB: Feature-based keypoint matching.
         SCALE: Multiscale template matching.
         OCR_GLOBAL: Initial full-screen text search.
         OCR_RECOVERY: Targeted local area text verification.
@@ -34,7 +33,6 @@ class DetectionMethod(StrEnum):
     LAB = "tpl_lab"
     EDGE = "tpl_edge"
     GRAY = "tpl_gray"
-    ORB = "orb"
     SCALE = "tpl_scale"
     OCR_GLOBAL = "ocr_global"
     OCR_RECOVERY = "ocr_recovery"
@@ -112,10 +110,10 @@ class GroundingConfig:
         use_lab: Toggle CIELAB color space matching for lighting invariance.
         use_edge: Toggle Canny edge-based template matching.
         use_gray: Toggle grayscale intensity matching.
-        use_orb: Toggle feature-based matching using ORB keypoints.
         use_ocr: Toggle global OCR text search.
         use_multiscale: Toggle searching for icons across multiple scales.
         use_adaptive: Toggle CLAHE contrast enhancement for input frames.
+        enable_recovery: Toggle targeted recovery OCR around visual anchors.
         num_cores: Set maximum threads for parallel detection passes.
         ocr_lang: Define Tesseract language code (e.g., 'eng').
         threshold: Set minimum confidence score required to return a candidate.
@@ -130,10 +128,10 @@ class GroundingConfig:
     use_lab: bool = True
     use_edge: bool = True
     use_gray: bool = True
-    use_orb: bool = False
     use_ocr: bool = True
     use_multiscale: bool = True
     use_adaptive: bool = False
+    enable_recovery: bool = True
 
     # Engine Settings
     num_cores: int = 8

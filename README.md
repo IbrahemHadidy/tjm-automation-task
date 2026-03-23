@@ -6,19 +6,21 @@
 
 ## Authorship & Tooling Note
 
-I implemented the automation architecture, grounding pipelines, FSM orchestration, and robustness features. The included PySide6 diagnostic GUIs were implemented from the specifications and workflows I designed; an AI assistant generated the GUI code and I validated and debugged it.
+I designed the automation flow, grounding strategy, FSM orchestration, recovery logic, and the overall architecture of the project. I also used AI assistance throughout the implementation process to help turn my ideas into code, explore alternatives, refine algorithms, and suggest improvements when I was deciding between approaches.
 
-These GUIs are development utilities for visualization and tuning and are not required to run the core automation workflow.
+The codebase was written iteratively: I proposed the design and behavior, asked for implementation suggestions, reviewed the generated code, then tested, corrected, and adapted it to fit the project’s structure and requirements. In that sense, AI was used as a development assistant across the whole project, while the direction, decisions, debugging, and integration work were driven by me.
+
+The included PySide6 diagnostic GUIs are development tools for tuning and inspection. They are not required for the core automation workflow.
 
 ---
 
 ## Core Solution Overview
 
-The primary objective is to reliably locate and interact with a desktop icon (Notepad) using vision-based methods (OpenCV and a vision-language model), even when the icon position changes.
+The primary objective is to reliably locate and interact with a desktop icon (Notepad) using vision-based methods, even when the icon position changes or the desktop state varies.
 
 The core workflow is as follows:
 
-1. **Fetch the first 10 posts from the JSONPlaceholder API** before launching Notepad to separate network I/O from UI automation and improve efficiency.
+1. Fetch the first 10 posts from the JSONPlaceholder API before launching Notepad, so network I/O is separated from UI automation.
 2. Capture a screenshot of the desktop.
 3. Detect the Notepad icon using computer vision grounding.
 4. Return the center coordinates of the detected icon.
@@ -26,9 +28,9 @@ The core workflow is as follows:
 6. Verify that Notepad successfully opened.
 7. Insert each post into Notepad and save it as `post_{id}.txt` in `Desktop/tjm-project`.
 
-To increase reliability, the system includes retry logic, window verification, and candidate ranking to handle detection failures or false positives.
+To increase reliability, the system includes retry logic, window verification, candidate ranking, and optional targeted OCR recovery to handle detection failures or false positives.
 
-Additional tooling (diagnostic GUIs, hybrid grounding strategies, monitoring) was implemented to assist development and experimentation but is not required for the core automation workflow
+Additional tooling, including diagnostic GUIs and hybrid grounding strategies, was implemented to assist development and experimentation, but it is not required for the core automation workflow.
 
 ---
 
@@ -51,7 +53,7 @@ This project is designed for **Windows 10/11**. The environment is fully managed
 - **Internet Connection:** Required for the initial setup to fetch the isolated Python toolchain and project dependencies.
 - **Tesseract OCR:** Required for the Computer Vision grounding engine.
   - [Download Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) and ensure the installation path matches `TESSERACT_PATH` in your `.env`.
-- **Gemini API Key:** Required for VLM-based grounding modes (Gemini 2.0).
+- **Gemini API Key:** Required for VLM-based grounding modes (Gemini).
 
 ---
 
@@ -127,13 +129,14 @@ The system is organized into three main components:
 ### 1. Screenshot & Environment Handling
 
 - Captures desktop screenshots
-- Manages workspace state (minimize / restore windows)
+- Manages workspace state through minimize / restore operations
+- Centralizes DPI handling in `core.py`
 
 ### 2. Grounding Engines
 
 Two independent detection strategies are implemented:
 
-- **OpenCV Grounding Engine** – template matching, feature detection, and OCR fusion
+- **OpenCV Grounding Engine** – template matching, OCR fusion, and optional targeted OCR recovery
 - **VLM Grounding Engine** – semantic icon detection using a vision-language model
 
 The engines return ranked candidate coordinates representing potential UI elements.
@@ -142,8 +145,8 @@ The engines return ranked candidate coordinates representing potential UI elemen
 
 A strict Finite State Machine (FSM) controller coordinates the automation workflow, delegating low-level OS interactions to dedicated UI drivers:
 
-- **FSM Orchestrator:** Manages the high-level lifecycle (launching, fetching, saving, retry logic) through explicit, tracked states (e.g., `INIT`, `LAUNCH`, `WRITE`, `SAVE`).
-- **Page Object Model (POM):** Low-level UI interactions are abstracted into a `NotepadDriver`. This isolates window focus, clipboard pasting, and OS-specific dialog navigation (like Windows 11 tab handling) away from the core business logic.
+- **FSM Orchestrator:** Manages the high-level lifecycle (launching, fetching, saving, retry logic) through explicit tracked states such as `INIT`, `LAUNCH`, `WRITE`, and `SAVE`.
+- **Page Object Model (POM):** Low-level UI interactions are abstracted into a `NotepadDriver`. This keeps window focus, clipboard paste, and OS-specific dialog handling separate from the core business logic.
 
 ---
 
@@ -157,7 +160,7 @@ A strict Finite State Machine (FSM) controller coordinates the automation workfl
 │   │
 │   ├── cv_strategy/             # Traditional Computer Vision Grounding
 │   │   ├── processors/          # Specialized detection modules
-│   │   │   ├── visual.py        # Execute template matching & feature detection
+│   │   │   ├── visual.py        # Execute template matching
 │   │   │   ├── ocr.py           # Integrate Tesseract OCR engine
 │   │   │   └── fusion.py        # Combine CV and OCR results
 │   │   ├── __init__.py          # Initialize package
@@ -227,94 +230,90 @@ This engine uses a "fused" approach, running visual template matching and Tesser
 
 ```mermaid
 flowchart TD
-    Start([match_ui_elements]) --> Load[Load PIL Screenshot]
-    Load --> Conv[Convert PIL to BGR / NumPy]
-    Conv --> Abort1{Abort Requested}
-    Abort1 -->|Yes| EndEmpty[Return Empty]
-    Abort1 -->|No| Detect[Detect Window Size]
+    %% ENTRY
+    Start([locate_elements]) --> Scale[Calculate target_size & scale_factor]
+    Scale --> Conv[Convert PIL Screenshot to BGR NumPy Mat]
+    Conv --> Abort1{Abort Requested?}
+    Abort1 -->|Yes| EndEmpty[Return Empty List]
 
-    Detect --> IconCheck{Icon Provided}
+    %% MAIN PIPELINE
+    Abort1 -->|No| IconCheck{Icon Path Provided?}
+    IconCheck -->|No| SkipTemplates[Skip Visual Passes]
 
-    %% TEMPLATE PIPELINE
-    IconCheck -->|Yes| TemplateFlags{Template Pass Enabled}
-    IconCheck -->|No| SkipTemplates[Skip Template Passes]
+    %% VISUAL PROCESSOR DETAIL
+    subgraph VisualSuite [VisualProcessor: run_all]
+        direction TB
+        PrepROI[ROI Preprocessing: Color, Gray, Edge, LAB]
 
-    TemplateFlags -->|Yes| Gray[Gray Template Pass]
-    TemplateFlags -->|Yes| Color[Color Template Pass]
-    TemplateFlags -->|Yes| LAB[LAB Template Pass]
-    TemplateFlags -->|Yes| Edge[Edge Template Pass]
-    TemplateFlags -->|Yes| Multi[Multi Scale Template Pass]
-    TemplateFlags -->|Yes| ORB[ORB Feature Pass]
+        subgraph MultiScaleModifier [Scale Loop: 1.0x + MULTISCALE_FACTORS]
+            direction TB
+            PrepTpl[Prep Template at Scale]
 
-    Gray --> CollectHits
-    Color --> CollectHits
-    LAB --> CollectHits
-    Edge --> CollectHits
-    Multi --> CollectHits
-    ORB --> CollectHits
+            subgraph VisualParallel [Parallel Detection Jobs]
+                direction LR
+                Gray[Gray Match]
+                Color[Color Match]
+                LAB[LAB Match]
+                Edge[Edge Match]
+            end
+            PrepTpl --> VisualParallel
+        end
 
-    CollectHits[Collect All Template Hits] --> NMS1[Initial Template NMS]
-    NMS1 --> Validate{Icon And Hits Present}
+        PrepROI --> MultiScaleModifier
+        VisualParallel --> VisualNMS[Internal IoU-based NMS]
+    end
 
-    Validate -->|Yes| Spatial[Aspect Ratio Geometric Validation]
-    Validate -->|No| TemplatesReady
+    IconCheck -->|Yes| VisualSuite
+    VisualNMS --> Geom[FusionProcessor: Apply Geometric Validation]
+    Geom --> TemplatesReady
+    SkipTemplates --> OCRCheck
 
-    Spatial --> TemplatesReady
-    SkipTemplates --> TemplatesReady
-
-    %% OCR PIPELINE (Global first)
-    TemplatesReady --> OCRCheck{OCR Enabled & Text Query Present}
+    %% GLOBAL OCR PIPELINE
+    TemplatesReady --> OCRCheck{OCR Enabled & Text Query Provided?}
     OCRCheck -->|No| OCRDone
-    OCRCheck -->|Yes| GlobalOCR[Global OCR Search Sweep]
+    OCRCheck -->|Yes| GlobalOCR[OCRProcessor: search_global]
 
-    GlobalOCR --> OCRPrep[OCR Preprocessing Variants]
-    OCRPrep --> CLAHE[CLAHE Contrast Enhancement]
-    OCRPrep --> Binary[Adaptive Thresholding]
-    OCRPrep --> Upscale[Resolution Upscaling]
-    OCRPrep --> TopHat[Top-hat Morphological Filter]
+    subgraph OCRParallel [Parallel OCR Preprocessing]
+        direction LR
+        OCRGray[Grayscale]
+        OCRInv[Inverted]
+        OCROtsu[Otsu]
+        OCRMorph[Morph]
+        OCRUpscale[2x]
+        OCRCLAHE[CLAHE]
+    end
 
-    CLAHE --> OCRRun
-    Binary --> OCRRun
-    Upscale --> OCRRun
-    TopHat --> OCRRun
+    GlobalOCR --> OCRParallel
+    OCRParallel --> OCRRun[Tesseract OCR: Multiple PSM]
+    OCRRun --> ConfidenceGate{Confidence > Threshold?}
+    ConfidenceGate -->|Yes| TextMatch[Semantic Matching]
+    ConfidenceGate -->|No| RejectOCR[Discard Noise]
+    TextMatch --> OCRAgg[Aggregate OCR Hits]
+    RejectOCR --> OCRAgg
+    OCRAgg --> RecoveryCheck
 
-    OCRRun[Run Tesseract - Multiple PSM Modes] --> ConfidenceGate{OCR Confidence Above Threshold}
-
-    ConfidenceGate -->|Yes| TextMatch[Semantic Text Similarity Matching]
-    ConfidenceGate -->|No| RejectOCR[Discard Low Confidence Noise]
-
-    TextMatch --> OCRAggregation[OCR Result Aggregation + Deduplication]
-    RejectOCR --> OCRAggregation
-
-    %% TARGETED RECOVERY (Triggered by Visual Anchors)
-    OCRAggregation --> RecoveryCheck{Templates & Text Query Present}
-    RecoveryCheck -->|Yes| TargetedRecovery[Targeted ROI OCR Around Visual Hits]
+    %% RECOVERY OCR
+    RecoveryCheck{Visual Anchors & Recovery?}
     RecoveryCheck -->|No| OCRDone
+    RecoveryCheck -->|Yes| RecoveryOCR[OCRProcessor: recover_labels]
+    RecoveryOCR --> Crop[Crop ROIs around Visual Hits]
+    Crop --> LocalOCR[Local PSM_SINGLE_LINE OCR]
+    LocalOCR --> OCRDone
 
-    TargetedRecovery --> OCRDone
+    %% FUSION & FINALIZATION
+    OCRDone --> Fusion[FusionProcessor: fuse_and_filter]
+    Fusion --> Proximity{Spatial Proximity Match?}
+    Proximity -->|Match| Fused[Create FUSED Candidate]
+    Proximity -->|No Match| Single[Keep Single-Source]
+    Fused --> Dedup[Final Spatial Deduplication]
+    Single --> Dedup
+    Dedup --> Threshold{Score >= config.threshold?}
+    Threshold -->|Yes| Keep[Add to Final List]
+    Threshold -->|No| Discard[Discard]
+    Keep --> Sort[Sort by Score Descending]
+    Sort --> EndReturn([Final Ranked List])
 
-    %% FUSION
-    OCRDone --> FusionStart[Fusion & Reconciliation Stage]
-    FusionStart --> PairMatch{Spatial Proximity Match?}
-
-    PairMatch -->|Match| CreateFused[Create Fused Candidate + Score Bonus]
-    PairMatch -->|No Match| KeepUnmatched[Keep Unmatched Candidates]
-
-    CreateFused --> CollectAll
-    KeepUnmatched --> CollectAll
-
-    CollectAll[All Candidates] --> Sort[Sort by Score: Fused > Single-Source]
-    Sort --> Proximity[Final Spatial Deduplication]
-
-    %% FINAL FILTER
-    Proximity --> Threshold{Score >= Threshold}
-    Threshold -->|Yes| Keep
-    Threshold -->|No| Discard
-
-    Keep --> EndReturn[Ranked Candidate List]
-    Discard --> EndReturn
-
-    %% ---------- STYLING ----------
+    %% STYLING
     classDef entry fill:#1b5e20,stroke:#66bb6a,color:#ffffff
     classDef decision fill:#4a148c,stroke:#ba68c8,color:#ffffff
     classDef template fill:#0d47a1,stroke:#64b5f6,color:#ffffff
@@ -323,13 +322,13 @@ flowchart TD
     classDef terminal fill:#b71c1c,stroke:#ef9a9a,color:#ffffff
     classDef preprocessing fill:#5d4037,stroke:#d7ccc8,color:#ffffff
 
-    class Start,Load,Conv,Detect entry
-    class Abort1,IconCheck,TemplateFlags,Validate,OCRCheck,RecoveryCheck,PairMatch,Threshold decision
-    class Gray,Color,LAB,Edge,Multi,ORB,CollectHits,NMS1,Spatial,SkipTemplates template
-    class GlobalOCR,OCRRun,TargetedRecovery,OCRAggregation ocr
-    class FusionStart,CreateFused,KeepUnmatched,CollectAll,Sort,Proximity fusion
+    class Start,Scale,Conv,Sort entry
+    class Abort1,IconCheck,OCRCheck,RecoveryCheck,ConfidenceGate,Proximity,Threshold decision
+    class VisualSuite,VisualNMS,Geom,SkipTemplates,MultiScaleModifier,PrepTpl template
+    class GlobalOCR,RecoveryOCR,OCRRun,TextMatch,RejectOCR,OCRAgg,Crop,LocalOCR ocr
+    class Fusion,Fused,Single,Dedup fusion
     class EndEmpty,EndReturn,Discard terminal
-    class OCRPrep,CLAHE,Binary,Upscale,TopHat preprocessing
+    class VisualParallel,OCRParallel,OCRGray,OCRInv,OCROtsu,OCRMorph,OCRUpscale,OCRCLAHE,PrepROI preprocessing
 
 ```
 
@@ -678,11 +677,11 @@ If a Visual hit and an OCR hit overlap within a specific radius, a `FUSION_SCORE
 
 ### 1. The Vision Laboratory (GUI)
 
-The project includes a PySide6-based **Vision Lab** (`gui.py`) designed for real-time parameter tuning:
+The project includes PySide6-based diagnostic interfaces used to tune grounding parameters and inspect detection results:
 
-- **Live Inspection:** Toggle detection passes (LAB, Edge, etc.) to see which one is most effective for your current wallpaper.
-- **Threshold Hot-Swapping:** Adjust `constants.py` values via the GUI sliders to find the "Sweet Spot" for your environment.
-- **Coordinate Validation:** Click "Copy Best" to grab the physical pixel coordinates and verify alignment.
+- **Live Inspection:** Toggle detection passes such as LAB, Edge, and multiscale search to see which one is most effective for your current wallpaper.
+- **Threshold Hot-Swapping:** Adjust `constants.py` values via GUI controls to find the best detection thresholds for your environment.
+- **Coordinate Validation:** Copy the best candidate coordinates and verify alignment manually.
 
 ### 2. Tuning `constants.py`
 
@@ -691,21 +690,14 @@ All detection logic is governed by centralized constants. Use the table below to
 | Symptom              | Targeted Adjustment                                                                      |
 | -------------------- | ---------------------------------------------------------------------------------------- |
 | **Missed Icons**     | Lower `TPL_COLOR_THRESHOLD`, `TPL_GRAY_THRESHOLD`, or expand `MULTISCALE_FACTORS`.       |
-| **Duplicate Clicks** | Increase `NMS_RADIUS_FACTOR` or `FINAL_DEDUP_RADIUS_FACTOR`.                             |
-| **Weak OCR Results** | Adjust `OCR_MIN_CONFIDENCE` or `OCR_RECOVERY_THRESHOLD`.                                 |
+| **Duplicate Clicks** | Increase `NMS_IOU_THRESHOLD` or adjust final deduplication settings.                     |
+| **Weak OCR Results** | Adjust `OCR_MIN_CONFIDENCE`, `OCR_RECOVERY_THRESHOLD`, or recovery settings.             |
 | **False Positives**  | Reduce `GEOM_RATIO_BONUS_WEIGHT` or increase relevant template thresholds.               |
 | **Slow Detection**   | Reduce `MAX_TEMPLATE_HITS`, lower `RECOVERY_QUEUE_LIMIT`, or limit `MULTISCALE_FACTORS`. |
 
 ### 3. Visual Observability & Safety
 
-- **Artifact Snapshots:** Upon a `FATAL` error, the `RunMonitor` saves a high-contrast debug image to `logs/run_id/errors/` with rendered bounding boxes and confidence scores.
-- **Video Replays:** The system automatically stitches step-by-step screenshots into an `execution_replay.mp4` using OpenCV’s `VideoWriter`, allowing developers to watch the bot's decision-making process in real-time.
+- **Artifact Snapshots:** Upon a fatal error, the `RunMonitor` saves a high-contrast debug image to `logs/run_id/errors/` with rendered bounding boxes and confidence scores.
+- **Video Replays:** The system compiles step-by-step screenshots into an `execution_replay.mp4` using OpenCV’s `VideoWriter`.
 - **Telemetry:** Check `metadata.json` in the log folder for execution times and engine scores.
 - **Hardware Safety:** If the mouse is locked via `BlockInput`, the system automatically releases the lock upon task timeout or failure.
-
-### 4. Hardware & DPI Checklist
-
-If clicks land offset from the target:
-
-1. **DPI Awareness:** Confirm the logs show `SetProcessDpiAwarenessContext` succeeded.
-2. **Resolution Scale:** Ensure Windows "Display Settings" scale (e.g., 150%) is consistent. The engine handles scaling, but extreme settings may require larger icon templates.

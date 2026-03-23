@@ -18,6 +18,7 @@ import pyautogui
 import pygetwindow as gw
 
 from config import ICON_PATH, OPENCV_TEXT_QUERY, TESS_PATH, VLM_INSTRUCTION
+from cv_strategy.constants import RGB_TO_BGR
 from cv_strategy.engine import CVGroundingEngine
 from vlm_strategy.engine import AiGroundingEngine
 from vlm_strategy.utils import AiImageUtils
@@ -88,6 +89,11 @@ def _verify_and_launch(
         time.sleep(0.5)
 
     print(f"[WARN] {source} target at ({x}, {y}) failed to open application.")
+
+    # Reset desktop ONLY after a failed attempt
+    pyautogui.hotkey("win", "m")
+    time.sleep(0.3)
+
     return None
 
 
@@ -155,7 +161,7 @@ class VLMStrategy(LaunchStrategy):
             viz_pil = AiImageUtils.draw_debug_results(screenshot, results)
             self.last_perception_viz = cv2.cvtColor(
                 np.array(viz_pil),
-                cv2.COLOR_RGB2BGR,
+                RGB_TO_BGR,
             )
 
             for n in results:
@@ -197,7 +203,7 @@ class CVStrategy(LaunchStrategy):
         try:
             results = self.engine.locate_elements(
                 screenshot=screenshot_img,
-                icon_image=ICON_PATH,
+                icon_path=ICON_PATH,
                 text_query=OPENCV_TEXT_QUERY,
             )
             results.sort(key=lambda c: c.score, reverse=True)

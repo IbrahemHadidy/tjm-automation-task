@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from core import set_high_dpi_awareness
+from cv_strategy.constants import BGR_TO_RGB, RGB_TO_BGR
 from cv_strategy.engine import CVGroundingEngine, GroundingConfig
 from screenshot_service import ScreenshotService
 
@@ -189,7 +190,7 @@ class ZoomableLabel(QLabel):
             crop = self.full_res_frame[y1 : y1 + cw, x1 : x1 + cw]
 
             if crop.size > 0:
-                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                crop_rgb = cv2.cvtColor(crop, BGR_TO_RGB)
                 h, w, _ = crop_rgb.shape
                 qimg = QImage(
                     crop_rgb.data.tobytes(),
@@ -300,7 +301,7 @@ class Worker(QThread):
             # Pass the PIL image directly to the engine
             results = self.engine.locate_elements(
                 screenshot=active_image,
-                icon_image=self.icon_path,
+                icon_path=self.icon_path,
                 text_query=self.text_query,
                 config=self.config,
                 callback=callback_bridge,
@@ -311,7 +312,7 @@ class Worker(QThread):
                 self.finished.emit([], None)
             else:
                 self.progress_signal.emit(100)
-                raw_cv2 = cv2.cvtColor(np.array(active_image), cv2.COLOR_RGB2BGR)
+                raw_cv2 = cv2.cvtColor(np.array(active_image), RGB_TO_BGR)
                 self.finished.emit(results, raw_cv2)
 
         except Exception as e:
@@ -382,7 +383,6 @@ class GroundingLab(QMainWindow):
         self.chk_lab = QCheckBox("CIELAB Match (Lighting)")
         self.chk_edge = QCheckBox("Edge/Canny Match")
         self.chk_gray = QCheckBox("Grayscale Match")
-        self.chk_orb = QCheckBox("ORB (Rotation Invariant)")
         self.chk_multiscale = QCheckBox("Multi-Scale Sweep")
 
         template_map = {
@@ -402,10 +402,6 @@ class GroundingLab(QMainWindow):
                 "use_gray",
                 "Ignores color data. Fastest processing speed.",
             ),
-            self.chk_orb: (
-                "use_orb",
-                "Feature-based matching. Works even if icon is rotated or skewed.",
-            ),
             self.chk_multiscale: (
                 "use_multiscale",
                 "Repeats search at different sizes. Use if icon scaling is unknown.",
@@ -423,6 +419,7 @@ class GroundingLab(QMainWindow):
         ocr_v = QVBoxLayout(ocr_group)
 
         self.chk_ocr = QCheckBox("Enable OCR Engine")
+        self.chk_recovery = QCheckBox("Targeted Recovery")
         self.chk_adaptive = QCheckBox("Adaptive Threshold")
         self.chk_sharpen = QCheckBox("OCR Sharpening")
         self.chk_upscale = QCheckBox("OCR 2x Upscale")
@@ -431,6 +428,10 @@ class GroundingLab(QMainWindow):
 
         ocr_map = {
             self.chk_ocr: ("use_ocr", "Global toggle for the Tesseract Engine."),
+            self.chk_recovery: (
+                "enable_recovery",
+                "Runs local OCR around visual anchors to recover missed labels.",
+            ),
             self.chk_adaptive: (
                 "use_adaptive",
                 "Dynamic binarization. Essential for text on complex backgrounds.",
@@ -618,7 +619,6 @@ class GroundingLab(QMainWindow):
             self.chk_lab,
             self.chk_edge,
             self.chk_gray,
-            self.chk_orb,
             self.chk_multiscale,
         ]:
             chk.setEnabled(icon_selected)
@@ -628,6 +628,7 @@ class GroundingLab(QMainWindow):
         # --- OCR PASS CHECKBOXES ---
         ocr_checkboxes = [
             self.chk_ocr,
+            self.chk_recovery,
             self.chk_adaptive,
             self.chk_sharpen,
             self.chk_upscale,
@@ -661,9 +662,9 @@ class GroundingLab(QMainWindow):
         self.chk_lab.setChecked(d.use_lab)
         self.chk_edge.setChecked(d.use_edge)
         self.chk_gray.setChecked(d.use_gray)
-        self.chk_orb.setChecked(d.use_orb)
         self.chk_multiscale.setChecked(d.use_multiscale)
         self.chk_ocr.setChecked(d.use_ocr)
+        self.chk_recovery.setChecked(d.enable_recovery)
         self.chk_adaptive.setChecked(d.use_adaptive)
         self.chk_sharpen.setChecked(getattr(d, "use_sharpen", True))
         self.chk_upscale.setChecked(getattr(d, "use_upscale", True))
@@ -716,10 +717,10 @@ class GroundingLab(QMainWindow):
             use_lab=self.chk_lab.isChecked(),
             use_edge=self.chk_edge.isChecked(),
             use_gray=self.chk_gray.isChecked(),
-            use_orb=self.chk_orb.isChecked(),
             use_multiscale=self.chk_multiscale.isChecked(),
             use_ocr=self.chk_ocr.isChecked(),
             use_adaptive=self.chk_adaptive.isChecked(),
+            enable_recovery=self.chk_recovery.isChecked(),
             num_cores=self.num_cores.value(),
             threshold=self.threshold.value(),
             psm=self.psm_input.value(),
@@ -758,7 +759,7 @@ class GroundingLab(QMainWindow):
         self.display.set_frame(frame)
 
         # Convert BGR to RGB
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(frame, BGR_TO_RGB)
         h, w, ch = rgb.shape
         qimg = QImage(rgb.data.tobytes(), w, h, ch * w, QImage.Format.Format_RGB888)
 

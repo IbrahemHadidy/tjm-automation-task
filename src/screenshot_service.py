@@ -31,7 +31,7 @@ class ScreenshotService:
 
     """
 
-    def __init__(self, settle_delay: float = 1.0) -> None:
+    def __init__(self, settle_delay: float = 0.3) -> None:
         """Initialize the screenshot service."""
         self._settle_delay = settle_delay
         self._window_snapshot: list[dict] = []
@@ -114,7 +114,7 @@ class ScreenshotService:
         # Step 2: Minimize other windows if requested
         if minimize_others:
             self.toggle_desktop()
-            time.sleep(0.2)  # Allow OS to settle
+            time.sleep(self._settle_delay)
 
         # Step 3: Restore and activate only the target window
         target_win.restore()

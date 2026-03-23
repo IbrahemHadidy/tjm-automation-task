@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 import pytesseract
 
-from cv_strategy.constants import RECOVERY_QUEUE_LIMIT
+from cv_strategy.constants import GRAY_TO_BGR, RECOVERY_QUEUE_LIMIT, RGB_TO_BGR
 from cv_strategy.models import Candidate, DetectionMethod, GroundingConfig, PerfStat
 from cv_strategy.processors.fusion import FusionProcessor
 from cv_strategy.processors.ocr import OCRProcessor
@@ -73,7 +73,7 @@ class CVGroundingEngine:
 
         Args:
             candidates: List of candidates returned by locate_elements.
-            priority: The strategy to use ('fusion', 'text', or 'score').
+            priority: The strategy to use ('fusion', 'text', 'vision', or 'score').
 
         Returns:
             The best matching Candidate or None if the list is empty.
@@ -88,11 +88,22 @@ class CVGroundingEngine:
                 return max(fused, key=lambda c: c.score)
 
         if priority == "text":
-            # Target both global and recovery OCR methods via Enum
             ocr_methods = {DetectionMethod.OCR_GLOBAL, DetectionMethod.OCR_RECOVERY}
             ocr_cands = [c for c in candidates if c.method in ocr_methods]
             if ocr_cands:
                 return max(ocr_cands, key=lambda c: c.score)
+
+        if priority == "vision":
+            vision_methods = {
+                DetectionMethod.COLOR,
+                DetectionMethod.LAB,
+                DetectionMethod.EDGE,
+                DetectionMethod.GRAY,
+                DetectionMethod.SCALE,
+            }
+            vision_cands = [c for c in candidates if c.method in vision_methods]
+            if vision_cands:
+                return max(vision_cands, key=lambda c: c.score)
 
         # Default fallback: highest absolute score regardless of method
         return max(candidates, key=lambda c: c.score)
@@ -100,7 +111,7 @@ class CVGroundingEngine:
     def locate_elements(
         self,
         screenshot: Image.Image,
-        icon_image: Path | None,
+        icon_path: Path | None,
         text_query: str,
         config: GroundingConfig | None = None,
         callback: LogCallback | None = None,
@@ -112,14 +123,14 @@ class CVGroundingEngine:
             2. Execute Visual Template Matching passes.
             3. Execute Global OCR sweep.
             4. Apply NMS and Geometric validation to visual hits.
-            5. Perform Targeted OCR recovery on remaining visual anchors.
+            5. Perform Targeted OCR recovery on remaining visual anchors (optional).
             6. Fuse and filter all evidence into final candidates.
 
         Args:
             screenshot: The raw desktop capture in PIL format.
-            icon_image: Path to the template image to find.
+            icon_path: Path to the template image to find.
             text_query: String label to search for via OCR.
-            config: Configuration overrides for thresholds and scaling.
+            config: Configuration overrides for thresholds, scaling, and recovery.
             callback: Optional logger for progress and debug frames.
 
         Returns:
@@ -131,7 +142,7 @@ class CVGroundingEngine:
         t0 = time.time()
 
         # 1. Image Conversion & ROI Setup
-        full_img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+        full_img = cv2.cvtColor(np.array(screenshot), RGB_TO_BGR)
         self.last_raw_frame = full_img.copy()
         desktop_roi = ImageUtils.crop_to_desktop(full_img)
 
@@ -146,7 +157,7 @@ class CVGroundingEngine:
         # 3. Probabilistic Features
         template_hits = self._run_template_passes(
             desktop_roi,
-            icon_image,
+            icon_path,
             target_size,
             safe_config,
             callback,
@@ -158,20 +169,21 @@ class CVGroundingEngine:
             self.fusion_processor = FusionProcessor(safe_config)
 
         templates = self.fusion_processor.apply_nms(template_hits, target_size)
-        if icon_image:
-            templates = self.fusion_processor.validate_geometry(icon_image, templates)
+        if icon_path:
+            templates = self.fusion_processor.validate_geometry(icon_path, templates)
 
-        # 5. Targeted Recovery (Contextual OCR)
-        ocr_hits.extend(
-            self._targeted_recovery(
-                desktop_roi,
-                templates,
-                text_query,
-                target_size,
-                safe_config,
-                callback,
-            ),
-        )
+        # 5. Targeted Recovery (Contextual OCR) - only if enabled
+        if safe_config.enable_recovery:
+            ocr_hits.extend(
+                self._targeted_recovery(
+                    desktop_roi,
+                    templates,
+                    text_query,
+                    target_size,
+                    safe_config,
+                    callback,
+                ),
+            )
 
         # 6. Final Fusion & Confidence Filtering
         final_candidates = self.fusion_processor.fuse_and_filter(
@@ -207,7 +219,7 @@ class CVGroundingEngine:
         if frame is not None:
             # Normalize frame for debug storage
             self.last_debug_frame = (
-                cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                cv2.cvtColor(frame, GRAY_TO_BGR)
                 if len(frame.shape) == 2
                 else frame.copy()
             )
@@ -218,7 +230,7 @@ class CVGroundingEngine:
     def _run_template_passes(
         self,
         roi: MatLike,
-        icon: Path | None,
+        icon_path: Path | None,
         target_size: int,
         config: GroundingConfig,
         callback: LogCallback | None = None,
@@ -227,7 +239,7 @@ class CVGroundingEngine:
 
         Args:
             roi: The image region to search.
-            icon: Path to the icon template.
+            icon_path: Path to the icon template.
             target_size: The base size of UI elements on the current desktop.
             config: Grounding configuration.
             callback: Logging callback.
@@ -236,14 +248,14 @@ class CVGroundingEngine:
             List of candidates found via template matching.
 
         """
-        if not icon:
+        if not icon_path:
             return []
 
         self.visual_processor = self.visual_processor or VisualProcessor(config)
 
         hits = self.visual_processor.run_all(
             roi=roi,
-            icon_path=icon,
+            icon_path=icon_path,
             target_size=target_size,
             log_callback=lambda m, f=None, **kwargs: self._log(
                 m,
@@ -264,16 +276,19 @@ class CVGroundingEngine:
         config: GroundingConfig,
         callback: LogCallback | None = None,
     ) -> list[Candidate]:
-        """Run global OCR sweep using the OCRProcessor.
+        """Execute a global OCR sweep over the entire desktop region.
+
+        Uses the updated OCRProcessor to return **all matches** for the query,
+        including exact, substring, and fuzzy hits.
 
         Args:
-            roi: The full desktop image region.
-            text_query: Text to search for.
-            config: Grounding configuration.
-            callback: Logging callback.
+            roi: The full desktop image region in OpenCV BGR format.
+            text_query: Text string to search for.
+            config: Grounding configuration, including thresholds and flags.
+            callback: Optional logger for progress updates and debug frames.
 
         Returns:
-            List of candidates found via global text search.
+            List[Candidate]: OCR candidates detected across the full desktop.
 
         """
         if not text_query or not config.use_ocr:
@@ -285,15 +300,11 @@ class CVGroundingEngine:
             config,
         )
 
+        # Run global OCR with query matching and return all hits
         hits = self.ocr_processor.search_global(
             roi=roi,
             query=text_query,
-            log_callback=lambda m, f=None, **kwargs: self._log(
-                m,
-                f,
-                callback,
-                progress=kwargs.get("progress"),
-            ),
+            log_callback=callback or (lambda *_args, **_kwargs: None),
         )
 
         self.perf_stats.append(
@@ -311,29 +322,28 @@ class CVGroundingEngine:
         config: GroundingConfig,
         callback: LogCallback | None = None,
     ) -> list[Candidate]:
-        """Perform high-resolution local OCR around high-probability visual anchors.
+        """Perform high-resolution OCR around high-probability visual anchors.
+
+        Updated to use the OCRProcessor recovery mode that returns multiple
+        matches per anchor. Uses threading internally for efficiency.
 
         Args:
-            roi: The full desktop image region.
-            templates: Visual anchors used to define recovery ROIs.
-            text_query: Text to verify within the ROIs.
-            target_size: Base size for ROI calculation.
-            config: Grounding configuration.
-            callback: Logging callback.
+            roi: Full desktop image region in OpenCV BGR format.
+            templates: Visual anchor candidates used to define recovery ROIs.
+            text_query: Text string to verify within the cropped ROIs.
+            target_size: Base size for determining crop regions.
+            config: Grounding configuration, including thresholds and flags.
+            callback: Optional logger for progress updates and debug frames.
 
         Returns:
-            List of candidates found via targeted recovery.
+            List[Candidate]: OCR candidates detected in the localized regions.
 
         """
         if not templates or not text_query:
             return []
 
-        queue = templates[:RECOVERY_QUEUE_LIMIT]
-        self._log(
-            f"RECOVERY: Verifying {len(queue)} anchors",
-            callback=callback,
-            progress=82,
-        )
+        # Limit number of anchors to prevent overload
+        queue = templates[: min(RECOVERY_QUEUE_LIMIT, len(templates))]
 
         t0 = time.time()
         self.ocr_processor = self.ocr_processor or OCRProcessor(
@@ -342,11 +352,11 @@ class CVGroundingEngine:
         )
 
         hits = self.ocr_processor.recover_labels(
-            roi,
-            queue,
-            text_query,
-            target_size,
-            lambda m, f: self._log(m, f, callback=callback),
+            img=roi,
+            templates=queue,
+            query=text_query,
+            target_size=target_size,
+            log_callback=callback or (lambda *_args, **_kwargs: None),
         )
 
         self.perf_stats.append(
@@ -376,18 +386,31 @@ class CVGroundingEngine:
         self._gui_benchmark_report(duration_ms, callback)
 
         if callback and candidates:
-            header = f"| {'ID':<4} | {'Method':<15} | {'Score':<8} | {'Coords':<15} |"
-            divider = f"|{'-' * 6}|{'-' * 17}|{'-' * 10}|{'-' * 17}|"
+            # Table definitions with consistent padding
+            header = f"| {'ID':<4} | {'Method':<25} | {'Score':<8} | {'Coords':<15} |"
+            divider = f"|{'-' * 6}|{'-' * 27}|{'-' * 10}|{'-' * 17}|"
             table = ["### Candidate Detection Summary", header, divider]
 
             for i, c in enumerate(candidates):
                 coords = f"({c.x}, {c.y})"
-                method_name = (
-                    c.method.value if hasattr(c.method, "value") else str(c.method)
-                )
+
+                # Safe method name resolution
+                method_name = getattr(c.method, "value", str(c.method))
+
+                # Logic for fused naming
+                if "fused_match" in method_name:
+                    v_source = c.extra.get("visual_source")
+                    v_name = (
+                        getattr(v_source, "value", str(v_source))
+                        if v_source
+                        else "unknown"
+                    )
+                    method_name = f"fused ({v_name})"
+
                 table.append(
-                    f"| {i + 1:<4} | {method_name:<15} | {c.score:<8.2f} | {coords:<15} |",
+                    f"| {i + 1:<4} | {method_name:<25} | {c.score:<8.2f} | {coords:<15} |",
                 )
+
             callback("\n".join(table), "INFO", 100)
 
         self._log(
@@ -413,12 +436,12 @@ class CVGroundingEngine:
             return
 
         report = [f"### VISION ENGINE BENCHMARK ({total_time:.0f}ms)"]
-        report.append(f"| {'Pass Name':<20} | {'Time (ms)':<10} | {'Hits':<8} |")
-        report.append(f"|{'-' * 22}|{'-' * 12}|{'-' * 10}|")
+        report.append(f"| {'Pass Name':<30} | {'Time (ms)':<12} | {'Hits':<8} |")
+        report.append(f"|{'-' * 32}|{'-' * 14}|{'-' * 10}|")
 
         report.extend(
             [
-                f"| {stat.name:<20} | {stat.duration_ms:<10.0f} | {stat.items_found:<8} |"
+                f"| {stat.name:<30} | {stat.duration_ms:<12.0f} | {stat.items_found:<8} |"
                 for stat in self.perf_stats
             ],
         )

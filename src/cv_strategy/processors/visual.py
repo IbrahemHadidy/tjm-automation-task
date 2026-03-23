@@ -1,12 +1,15 @@
-"""Provide template matching and feature-based (ORB) visual detection logic.
+"""Provide template matching logic.
 
 Execute high-performance visual searches across multiple color spaces,
 edge maps, and scales to locate UI elements with pixel precision.
 """
 
+from __future__ import annotations
+
 import concurrent.futures
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ParamSpec
 
 import cv2
@@ -18,11 +21,7 @@ from cv_strategy.constants import (
     CANNY_HIGH_THRESHOLD,
     CANNY_LOW_THRESHOLD,
     MULTISCALE_FACTORS,
-    ORB_DEFAULT_SCORE,
-    ORB_MAX_FEATURES,
-    ORB_MIN_MATCHES,
-    ORB_NORM_TYPE,
-    ORB_SAMPLE_POINTS,
+    NMS_IOU_THRESHOLD,
     TPL_COLOR_THRESHOLD,
     TPL_EDGE_THRESHOLD,
     TPL_GRAY_THRESHOLD,
@@ -45,11 +44,40 @@ logger = logging.getLogger(__name__)
 P = ParamSpec("P")
 
 
+@dataclass(slots=True)
+class _DetectionJob:
+    """Describe one visual detection pass."""
+
+    name: str
+    func: Callable[..., list[Candidate]]
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+
+
+@dataclass(slots=True)
+class _PreparedTemplate:
+    """Hold all preprocessed template variants for a single target width."""
+
+    bgr: MatLike
+    gray: MatLike
+    edge: MatLike
+    lab: MatLike | None
+    mask: MatLike | None
+    height: int
+
+
 class VisualProcessor:
     """Handle visual detection using template matching and keypoint features.
 
-    Manage a parallelized suite of detection passes including color matching,
-    edge analysis, and multiscale searches to find UI icons on a desktop.
+    The processor follows a three-stage pipeline:
+
+    1. Prepare shared template and ROI representations once.
+    2. Execute enabled detection passes in parallel.
+    3. Fuse overlapping candidates with IoU-based non-maximum suppression.
+
+    The implementation keeps the expensive work concentrated in OpenCV calls,
+    caches repeated template preparation, and keeps the public control flow easy
+    to follow for debugging and profiling.
     """
 
     def __init__(self, config: GroundingConfig) -> None:
@@ -61,6 +89,144 @@ class VisualProcessor:
         """
         self.config = config
         self.last_stats: list[PerfStat] = []
+        self._template_cache: dict[tuple[str, int], _PreparedTemplate] = {}
+        self._orb_cache: dict[str, MatLike | None] = {}
+
+    def _build_jobs(
+        self,
+        *,
+        roi: MatLike,
+        roi_gray: MatLike,
+        roi_edge: MatLike,
+        roi_lab: MatLike | None,
+        icon_path: Path,
+        base_target_size: int,
+    ) -> list[_DetectionJob]:
+        """Construct the list of enabled visual detection jobs.
+
+        This method centralizes the creation of all detection passes based on the
+        current configuration, including color, LAB, edge, grayscale, and
+        multiscale template matching. Each job is represented as a _DetectionJob,
+        containing the job name, the function to execute, and its arguments.
+
+        Using this method ensures that the job setup is consistent and
+        maintainable, and allows easy extension for new passes.
+
+        Args:
+            roi: The region of interest from the screen (BGR).
+            roi_gray: Grayscale version of the ROI.
+            roi_edge: Edge-detected version of the ROI.
+            roi_lab: LAB color-space version of the ROI (or None if unused).
+            icon_path: Path to the template icon file.
+            base_target_size: Expected base width of the icon in the ROI before scaling.
+
+        Returns:
+            A list of _DetectionJob objects for all enabled detection passes.
+
+        """
+        jobs: list[_DetectionJob] = []
+
+        def add_job(
+            enabled: bool,  # noqa: FBT001
+            name: str,
+            func: Callable[..., list[Candidate]],
+            args: tuple[Any, ...],
+            kwargs: dict[str, Any] | None = None,
+        ) -> None:
+            if enabled:
+                jobs.append(_DetectionJob(name, func, args, kwargs or {}))
+
+        # Determine which scales to process
+        scales = [1.0]
+        if self.config.use_multiscale:
+            for scale in MULTISCALE_FACTORS:
+                if scale not in scales:
+                    scales.append(scale)
+
+        for scale in scales:
+            scaled_w = int(base_target_size * scale)
+
+            # Bounds check for width
+            if scaled_w > roi.shape[1] or scaled_w <= 0:
+                continue
+
+            # Prepare templates for this specific scale
+            prepared = self._prep_template(icon_path, scaled_w)
+
+            # Bounds check for height
+            if prepared.height > roi.shape[0]:
+                continue
+
+            extra = {"scale_factor": scale}
+            scale_label = f" (Scale {scale}x)" if scale != 1.0 else ""
+
+            add_job(
+                self.config.use_color,
+                f"Color Pass{scale_label}",
+                self._run_tpl_match,
+                (
+                    roi,
+                    prepared.bgr,
+                    prepared.mask,
+                    scaled_w,
+                    prepared.height,
+                    TPL_COLOR_THRESHOLD,
+                    DetectionMethod.COLOR,
+                    extra,
+                ),
+            )
+
+            add_job(
+                self.config.use_lab
+                and roi_lab is not None
+                and prepared.lab is not None,
+                f"LAB Pass{scale_label}",
+                self._run_tpl_match,
+                (
+                    roi_lab,
+                    prepared.lab,
+                    None,
+                    scaled_w,
+                    prepared.height,
+                    TPL_LAB_THRESHOLD,
+                    DetectionMethod.LAB,
+                    extra,
+                ),
+            )
+
+            add_job(
+                self.config.use_edge,
+                f"Edge Pass{scale_label}",
+                self._run_tpl_match,
+                (
+                    roi_edge,
+                    prepared.edge,
+                    None,
+                    scaled_w,
+                    prepared.height,
+                    TPL_EDGE_THRESHOLD,
+                    DetectionMethod.EDGE,
+                    extra,
+                ),
+            )
+
+            add_job(
+                self.config.use_gray,
+                f"Gray Pass{scale_label}",
+                self._run_tpl_match,
+                (
+                    roi_gray,
+                    prepared.gray,
+                    None,
+                    scaled_w,
+                    prepared.height,
+                    TPL_GRAY_THRESHOLD,
+                    DetectionMethod.GRAY,
+                    extra,
+                ),
+            )
+
+        return jobs
 
     def run_all(
         self,
@@ -70,175 +236,82 @@ class VisualProcessor:
         log_callback: Callable[..., Any],
         should_abort: Callable[[], bool],
     ) -> list[Candidate]:
-        """Execute enabled visual passes in parallel with real-time debug updates.
+        """Execute enabled visual passes with cached preprocessing and fusion.
 
-        This method coordinates the visual detection suite. It performs sequential
-        pre-processing to provide a "live" feedback loop to the UI via log_callback
-        before launching parallelized template matching and feature detection.
+        The pipeline is split into preprocessing and detection passes.
+        Template preparation and ROI conversions are done once.
 
         Args:
             roi: The region of interest from the screen to search within.
             icon_path: Path to the template icon file.
             target_size: Expected width of the icon in the ROI.
-            log_callback: Function to report progress, messages, and debug images.
+            log_callback: Function to report progress messages (text only).
             should_abort: Function to check if the process should stop early.
 
         Returns:
-            A list of all detected candidates across all enabled passes. Returns
-            an empty list if icon_path is None or if the process is aborted.
-
-        Raises:
-            Exception: Logs and continues if an individual detection pass fails.
+            A list of detected candidates across all enabled passes. Empty if
+            icon_path is None or aborted.
 
         """
         if not icon_path or should_abort():
             return []
 
-        hits: list[Candidate] = []
         self.last_stats = []
+        hits: list[Candidate] = []
 
-        # 1. Pre-process templates and primary ROI views
-        # We do this sequentially to allow the UI to "flicker" through the logic modes
-        tpl_bgr, tpl_mask, tpl_h = self._prep_template(icon_path, target_size)
-
-        # UI Feedback: Initial BGR ROI
-        log_callback("VISUAL: Initializing scan...", roi, progress=12)
-
-        # UI Feedback: Grayscale Analysis
+        # Process ROI once
         roi_gray = cv2.cvtColor(roi, BGR_TO_GRAY)
-        tpl_gray = cv2.cvtColor(tpl_bgr, BGR_TO_GRAY)
-        log_callback("VISUAL: Analyzing Intensity (Gray)...", roi_gray, progress=15)
-        time.sleep(0.02)  # Tiny pause to ensure the UI renders the frame
-
-        # UI Feedback: Edge Detection (Canny)
         roi_edge = cv2.Canny(roi_gray, CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD)
-        tpl_edge = cv2.Canny(tpl_gray, CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD)
-        log_callback("VISUAL: Detecting Edges (Canny)...", roi_edge, progress=18)
-        time.sleep(0.02)
+        roi_lab = cv2.cvtColor(roi, BGR_TO_LAB) if self.config.use_lab else None
 
-        # UI Feedback: Color Space Analysis (LAB)
-        roi_lab = None
-        if self.config.use_lab:
-            roi_lab = cv2.cvtColor(roi, BGR_TO_LAB)
-            log_callback("VISUAL: Mapping Color Spaces (LAB)...", roi_lab, progress=20)
-            time.sleep(0.02)
+        # Build jobs across all enabled passes and scales
+        jobs = self._build_jobs(
+            roi=roi,
+            roi_gray=roi_gray,
+            roi_edge=roi_edge,
+            roi_lab=roi_lab,
+            icon_path=icon_path,
+            base_target_size=target_size,
+        )
 
-        # 2. Parallel Execution Suite
-        # We reuse the pre-calculated maps (roi_edge, roi_gray) to save CPU cycles
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.config.num_cores,
-        ) as executor:
-            futures = []
+        if not jobs:
+            log_callback("Visual Suite Completed", progress=40)
+            return []
 
-            # Color Match (Uses original BGR)
-            if self.config.use_color:
-                futures.append(
-                    executor.submit(
-                        self._timed_run,
-                        "Color Pass",
-                        self._run_tpl_match,
-                        roi,
-                        tpl_bgr,
-                        tpl_mask,
-                        target_size,
-                        tpl_h,
-                        TPL_COLOR_THRESHOLD,
-                        DetectionMethod.COLOR,
-                    ),
-                )
+        max_workers = min(self.config.num_cores, len(jobs))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map: dict[
+                concurrent.futures.Future[tuple[list[Candidate], PerfStat]],
+                str,
+            ] = {
+                executor.submit(
+                    self._timed_run,
+                    job.name,
+                    job.func,
+                    *job.args,
+                    **job.kwargs,
+                ): job.name
+                for job in jobs
+            }
 
-            # LAB Match (Uses pre-calculated LAB map)
-            if self.config.use_lab and roi_lab is not None:
-                futures.append(
-                    executor.submit(
-                        self._timed_run,
-                        "LAB Pass",
-                        self._run_tpl_match,
-                        roi_lab,
-                        cv2.cvtColor(tpl_bgr, BGR_TO_LAB),
-                        None,
-                        target_size,
-                        tpl_h,
-                        TPL_LAB_THRESHOLD,
-                        DetectionMethod.LAB,
-                    ),
-                )
-
-            # Edge Match (Uses pre-calculated Canny map)
-            if self.config.use_edge:
-                futures.append(
-                    executor.submit(
-                        self._timed_run,
-                        "Edge Pass",
-                        self._run_tpl_match,
-                        roi_edge,
-                        tpl_edge,
-                        None,
-                        target_size,
-                        tpl_h,
-                        TPL_EDGE_THRESHOLD,
-                        DetectionMethod.EDGE,
-                    ),
-                )
-
-            # Gray Match (Uses pre-calculated Gray map)
-            if self.config.use_gray:
-                futures.append(
-                    executor.submit(
-                        self._timed_run,
-                        "Gray Pass",
-                        self._run_tpl_match,
-                        roi_gray,
-                        tpl_gray,
-                        None,
-                        target_size,
-                        tpl_h,
-                        TPL_GRAY_THRESHOLD,
-                        DetectionMethod.GRAY,
-                    ),
-                )
-
-            # Feature-based ORB Match
-            if self.config.use_orb:
-                futures.append(
-                    executor.submit(
-                        self._timed_run,
-                        "ORB Pass",
-                        self._run_orb_pass,
-                        roi,
-                        icon_path,
-                    ),
-                )
-
-            # Multiscale Analysis
-            if self.config.use_multiscale:
-                futures.extend(
-                    [
-                        executor.submit(
-                            self._timed_run,
-                            f"Scale {s}x",
-                            self._run_scaled_pass,
-                            roi,
-                            icon_path,
-                            target_size,
-                            s,
-                        )
-                        for s in MULTISCALE_FACTORS
-                    ],
-                )
-
-            # 3. Result Aggregation
-            for future in concurrent.futures.as_completed(futures):
+            for future in concurrent.futures.as_completed(future_map):
                 if should_abort():
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
+
                 try:
                     result_hits, stat = future.result()
-                    hits.extend(result_hits)
-                    self.last_stats.append(stat)
                 except Exception:
-                    logger.exception("Visual detection pass failed")
+                    logger.exception(
+                        "Visual detection pass failed: %s",
+                        future_map[future],
+                    )
+                    continue
 
+                hits.extend(result_hits)
+                self.last_stats.append(stat)
+
+        hits = self._fuse_candidates(hits)
         log_callback("Visual Suite Completed", progress=40)
         return hits
 
@@ -266,7 +339,7 @@ class VisualProcessor:
             extra: Optional metadata for the Candidate.
 
         Returns:
-            List of candidates found in this specific pass.
+            A list of candidates found in this specific pass.
 
         """
         result_map = cv2.matchTemplate(roi_proc, tpl_proc, TPL_MATCH_METHOD, mask=mask)
@@ -291,47 +364,85 @@ class VisualProcessor:
             A tuple containing the list of found candidates and a PerfStat object.
 
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         result = func(*args, **kwargs)
-        duration_ms = (time.time() - start_time) * 1000
+        duration_ms = (time.perf_counter() - start_time) * 1000
         return result, PerfStat(name, duration_ms, len(result))
 
     def _prep_template(
         self,
         path: Path,
         target_width: int,
-    ) -> tuple[MatLike, MatLike | None, int]:
-        """Resize the template and extract an alpha mask if available.
+    ) -> _PreparedTemplate:
+        """Load, resize, and cache all template variants for one target width.
 
         Args:
             path: Path to the template image.
             target_width: Desired width for resizing.
 
         Returns:
-            A tuple of (resized_rgb_image, optional_mask, target_height).
+            A prepared template bundle containing resized BGR, grayscale, edge,
+            optional LAB, optional alpha mask, and the resized height.
 
         Raises:
             FileNotFoundError: If the template cannot be loaded.
 
         """
+        cache_key = (str(path), target_width)
+        cached = self._template_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         template_raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         if template_raw is None:
             msg = f"Failed to load template at {path}"
             raise FileNotFoundError(msg)
 
-        scale = target_width / template_raw.shape[1]
-        target_height = int(template_raw.shape[0] * scale)
+        # OpenCV may return grayscale, BGR, or BGRA images depending on the file.
+        # Normalize the template into a predictable BGR pipeline before caching.
+        if template_raw.ndim == 2:
+            base_bgr = cv2.cvtColor(template_raw, cv2.COLOR_GRAY2BGR)
+            mask = None
+        else:
+            has_alpha = template_raw.shape[2] == 4
+            base_bgr = template_raw[:, :, 0:3] if has_alpha else template_raw
+            mask = (
+                cv2.resize(
+                    template_raw[:, :, 3],
+                    (
+                        target_width,
+                        int(
+                            template_raw.shape[0]
+                            * target_width
+                            / template_raw.shape[1],
+                        ),
+                    ),
+                )
+                if has_alpha
+                else None
+            )
 
-        mask = (
-            cv2.resize(template_raw[:, :, 3], (target_width, target_height))
-            if template_raw.shape[-1] == 4
-            else None
+        scale = target_width / base_bgr.shape[1]
+        target_height = int(base_bgr.shape[0] * scale)
+        resize_size = (target_width, target_height)
+
+        bgr = cv2.resize(base_bgr, resize_size)
+        if mask is not None:
+            mask = cv2.resize(mask, resize_size)
+        gray = cv2.cvtColor(bgr, BGR_TO_GRAY)
+        edge = cv2.Canny(gray, CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD)
+        lab = cv2.cvtColor(bgr, BGR_TO_LAB) if self.config.use_lab else None
+
+        prepared = _PreparedTemplate(
+            bgr=bgr,
+            gray=gray,
+            edge=edge,
+            lab=lab,
+            mask=mask,
+            height=target_height,
         )
-        rgb_image = cv2.resize(
-            template_raw[:, :, 0:3] if mask is not None else template_raw,
-            (target_width, target_height),
-        )
-        return rgb_image, mask, target_height
+        self._template_cache[cache_key] = prepared
+        return prepared
 
     def _extract_locations(
         self,
@@ -356,79 +467,27 @@ class VisualProcessor:
             A list of validated Candidate objects.
 
         """
-        locations = np.where(result_map >= threshold)
-        candidates = []
-        for pt in zip(*locations[::-1], strict=False):
-            score = float(result_map[pt[1], pt[0]])
+        matches = np.argwhere(result_map >= threshold)
+        if matches.size == 0:
+            return []
+
+        candidates: list[Candidate] = []
+        for y, x in matches:
+            score = float(result_map[y, x])
+            if not np.isfinite(score):
+                continue
+
             candidate = Candidate(
-                x=int(pt[0] + width // 2),
-                y=int(pt[1] + height // 2),
+                x=int(x + width // 2),
+                y=int(y + height // 2),
                 score=score,
                 method=method,
-                bbox=(int(pt[0]), int(pt[1]), width, height),
+                bbox=(int(x), int(y), width, height),
                 extra=extra or {},
             )
-            # Filter out invalid / infinite candidates
-            if (
-                np.isfinite(candidate.x)
-                and np.isfinite(candidate.y)
-                and np.isfinite(candidate.score)
-            ):
-                candidates.append(candidate)
+            candidates.append(candidate)
+
         return candidates
-
-    def _run_orb_pass(
-        self,
-        roi: MatLike,
-        template_path: Path,
-    ) -> list[Candidate]:
-        """Detect clusters of matching keypoints using the ORB algorithm.
-
-        Args:
-            roi: The search image.
-            template_path: Path to the original icon.
-
-        Returns:
-            A list containing a single Candidate if enough features match.
-
-        """
-        template = cv2.imread(str(template_path))
-        if template is None:
-            return []
-        orb = cv2.ORB.create(nfeatures=ORB_MAX_FEATURES)
-        _, descriptors1 = orb.detectAndCompute(template, None)
-        keypoints2, descriptors2 = orb.detectAndCompute(roi, None)
-
-        if descriptors1 is None or descriptors2 is None:
-            return []
-
-        matches = sorted(
-            cv2.BFMatcher(ORB_NORM_TYPE, crossCheck=True).match(
-                descriptors1,
-                descriptors2,
-            ),
-            key=lambda x: x.distance,
-        )
-
-        if len(matches) > ORB_MIN_MATCHES:
-            match_pts = np.array(
-                [keypoints2[m.trainIdx].pt for m in matches[:ORB_SAMPLE_POINTS]],
-            )
-            center = np.mean(match_pts, axis=0)
-
-            w, h = template.shape[1], template.shape[0]
-            orb_bbox = (int(center[0] - w // 2), int(center[1] - h // 2), w, h)
-
-            return [
-                Candidate(
-                    x=int(center[0]),
-                    y=int(center[1]),
-                    score=ORB_DEFAULT_SCORE,
-                    method=DetectionMethod.ORB,
-                    bbox=orb_bbox,
-                ),
-            ]
-        return []
 
     def _run_scaled_pass(
         self,
@@ -437,7 +496,7 @@ class VisualProcessor:
         target_width: int,
         scale_factor: float,
     ) -> list[Candidate]:
-        """Execute a multiscale template matching pass.
+        """Execute a multiscale template-matching pass.
 
         Args:
             roi: The search image.
@@ -450,18 +509,123 @@ class VisualProcessor:
 
         """
         scaled_w = int(target_width * scale_factor)
-        tpl, mask, scaled_h = self._prep_template(template_path, scaled_w)
+        prepared = self._prep_template(template_path, scaled_w)
 
-        if scaled_h > roi.shape[0] or scaled_w > roi.shape[1]:
+        if prepared.height > roi.shape[0] or scaled_w > roi.shape[1]:
             return []
 
         return self._run_tpl_match(
             roi,
-            tpl,
-            mask,
+            prepared.bgr,
+            prepared.mask,
             scaled_w,
-            scaled_h,
+            prepared.height,
             TPL_MULTISCALE_THRESHOLD,
             DetectionMethod.SCALE,
             extra={"scale_factor": scale_factor},
         )
+
+    def _fuse_candidates(self, candidates: list[Candidate]) -> list[Candidate]:
+        """Merge near-duplicate candidates from multiple passes.
+
+        The fusion step removes excessive overlap between detections that point to
+        the same visual object but were produced by different passes or scales.
+
+        This implementation uses greedy IoU-based non-maximum suppression instead
+        of center-distance heuristics. IoU is more geometrically meaningful when
+        the same icon is detected with slightly different box sizes or offsets.
+
+        Args:
+            candidates: Raw candidates emitted by the enabled passes.
+
+        Returns:
+            A deduplicated list of candidates sorted by descending score.
+
+        """
+        if len(candidates) < 2:
+            return candidates
+
+        spatial_candidates = [candidate for candidate in candidates if candidate.bbox]
+        non_spatial_candidates = [
+            candidate for candidate in candidates if not candidate.bbox
+        ]
+
+        fused_spatial = self._nms_candidates(spatial_candidates, NMS_IOU_THRESHOLD)
+        fused = fused_spatial + sorted(
+            non_spatial_candidates,
+            key=lambda candidate: candidate.score,
+            reverse=True,
+        )
+        return sorted(fused, key=lambda candidate: candidate.score, reverse=True)
+
+    def _nms_candidates(
+        self,
+        candidates: list[Candidate],
+        iou_threshold: float,
+    ) -> list[Candidate]:
+        """Apply greedy IoU-based non-maximum suppression.
+
+        Args:
+            candidates: Spatial candidates with bounding boxes.
+            iou_threshold: Maximum intersection-over-union allowed before a box is
+                considered a duplicate of a higher-scoring box.
+
+        Returns:
+            The highest-scoring non-overlapping candidates.
+
+        """
+        if len(candidates) < 2:
+            return candidates
+
+        ranked = sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
+        kept: list[Candidate] = []
+
+        for candidate in ranked:
+            if candidate.bbox is None:
+                continue
+
+            if all(
+                self._box_iou(candidate.bbox, other.bbox) <= iou_threshold
+                for other in kept
+                if other.bbox is not None
+            ):
+                kept.append(candidate)
+
+        return kept
+
+    @staticmethod
+    def _box_iou(
+        box_a: tuple[int, int, int, int],
+        box_b: tuple[int, int, int, int],
+    ) -> float:
+        """Calculate intersection-over-union for two axis-aligned boxes.
+
+        Args:
+            box_a: Bounding box in ``(x, y, w, h)`` format.
+            box_b: Bounding box in ``(x, y, w, h)`` format.
+
+        Returns:
+            IoU in the ``0.0`` to ``1.0`` range.
+
+        """
+        ax, ay, aw, ah = box_a
+        bx, by, bw, bh = box_b
+
+        left = max(ax, bx)
+        top = max(ay, by)
+        right = min(ax + aw, bx + bw)
+        bottom = min(ay + ah, by + bh)
+
+        inter_w = max(0, right - left)
+        inter_h = max(0, bottom - top)
+        inter_area = inter_w * inter_h
+        if inter_area <= 0:
+            return 0.0
+
+        area_a = aw * ah
+        area_b = bw * bh
+        union_area = area_a + area_b - inter_area
+        if union_area <= 0:
+            return 0.0
+
+        return inter_area / union_area
