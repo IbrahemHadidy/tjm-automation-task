@@ -4,10 +4,7 @@ Manage system-level display settings, execution timing contexts, and
 OpenCV-based image manipulation for the grounding engine.
 """
 
-import ctypes
 import logging
-import time
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import cv2
@@ -15,15 +12,20 @@ import cv2
 from cv_strategy.constants import (
     CANNY_HIGH_THRESHOLD,
     CANNY_LOW_THRESHOLD,
+    COLOR_FUSED,
+    COLOR_OCR,
+    COLOR_VISUAL,
     DEFAULT_ICON_SIZE,
+    INNER_THICKNESS,
+    OUTER_THICKNESS,
     TASKBAR_HEIGHT_PX,
+    VIZ_MARKER_SIZE,
+    VIZ_TEXT_OFFSET,
+    VIZ_TEXT_SCALE,
+    VIZ_TEXT_THICKNESS,
 )
-from cv_strategy.models import PerfStat
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-    from pathlib import Path
-
     from cv2.typing import MatLike
 
     from cv_strategy.models import Candidate, GroundingConfig
@@ -31,61 +33,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def set_high_dpi_awareness() -> None:
-    """Configure the process to be DPI-aware on Windows.
-
-    Attempt to set the highest level of DPI awareness to ensure coordinates
-    captured via screenshots match the physical pixel grid.
-    """
-    try:
-        ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
-    except Exception:
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:
-            try:
-                ctypes.windll.user32.SetProcessDPIAware()
-            except Exception as e:
-                logger.warning("Failed to set DPI awareness: %s", e)
-
-
-@contextmanager
-def time_block(name: str, stats_list: list[PerfStat]) -> Iterator[None]:
-    """Measure the execution time of a code block and record performance stats.
-
-    Args:
-        name: Identifier for the operation being timed.
-        stats_list: Collection where the resulting PerfStat will be appended.
-
-    """
-    t0 = time.time()
-    yield
-    duration = (time.time() - t0) * 1000
-    stats_list.append(PerfStat(name, duration, 0))
-
-
 class ImageUtils:
     """Provide static utilities for loading, cropping, and enhancing screenshots."""
-
-    @staticmethod
-    def load_screenshot(path: Path) -> MatLike:
-        """Load an image from disk and validate its existence.
-
-        Args:
-            path: The filesystem path to the image file.
-
-        Returns:
-            The loaded image as an OpenCV MatLike object.
-
-        Raises:
-            FileNotFoundError: If the image cannot be loaded from the path.
-
-        """
-        img = cv2.imread(str(path))
-        if img is None:
-            msg = f"Failed to load screenshot at {path}"
-            raise FileNotFoundError(msg)
-        return img
 
     @staticmethod
     def crop_to_desktop(img: MatLike) -> MatLike:
@@ -191,11 +140,11 @@ class ImageUtils:
 
             # 1. Styling Logic
             if "FUSED" in method_str:
-                color = (0, 255, 136)  # Success Green
+                color = COLOR_FUSED
             elif "OCR" in method_str:
-                color = (0, 215, 255)  # Gold
+                color = COLOR_OCR
             else:
-                color = (255, 229, 0)  # Cyan
+                color = COLOR_VISUAL
 
             # 2. Draw Secondary Text Bounding Box (if fused/OCR)
             # This shows the specific area where the text was detected.
@@ -203,18 +152,46 @@ class ImageUtils:
             if t_bbox:
                 tx, ty, tw, th = t_bbox
                 # Draw as a thinner, dotted-style (multiple thin lines) box
-                cv2.rectangle(debug_view, (tx, ty), (tx + tw, ty + th), (0, 0, 0), 2)
-                cv2.rectangle(debug_view, (tx, ty), (tx + tw, ty + th), color, 1)
+                cv2.rectangle(
+                    debug_view,
+                    (tx, ty),
+                    (tx + tw, ty + th),
+                    (0, 0, 0),
+                    OUTER_THICKNESS,
+                )
+                cv2.rectangle(
+                    debug_view,
+                    (tx, ty),
+                    (tx + tw, ty + th),
+                    color,
+                    INNER_THICKNESS,
+                )
 
             # 3. Primary Visual: Main Bounding Box
             if hasattr(c, "bbox") and c.bbox:
                 bx, by, bw, bh = c.bbox
-                # 4px Black Outer / 2px Color Inner
-                cv2.rectangle(debug_view, (bx, by), (bx + bw, by + bh), (0, 0, 0), 4)
-                cv2.rectangle(debug_view, (bx, by), (bx + bw, by + bh), color, 2)
+                cv2.rectangle(
+                    debug_view,
+                    (bx, by),
+                    (bx + bw, by + bh),
+                    (0, 0, 0),
+                    OUTER_THICKNESS,
+                )
+                cv2.rectangle(
+                    debug_view,
+                    (bx, by),
+                    (bx + bw, by + bh),
+                    color,
+                    INNER_THICKNESS,
+                )
             elif not t_bbox:
-                # Fallback only if NO boxes exist
-                cv2.circle(debug_view, (c.x, c.y), 5, color, -1)
+                cv2.circle(
+                    debug_view,
+                    (c.x, c.y),
+                    max(2, VIZ_MARKER_SIZE // 4),
+                    color,
+                    -1,
+                )
 
             # 4. Label Preparation
             score_val = f"{c.score:.2f}"
@@ -230,25 +207,30 @@ class ImageUtils:
 
             # 5. Vertical Positioning
             is_at_top = c.y < 120
-            y_offsets = [35, 55, 75] if is_at_top else [-65, -45, -25]
+            y_offsets = (
+                [VIZ_TEXT_OFFSET[1], VIZ_TEXT_OFFSET[1] * 2, VIZ_TEXT_OFFSET[1] * 3]
+                if is_at_top
+                else [
+                    -VIZ_TEXT_OFFSET[1] * 3,
+                    -VIZ_TEXT_OFFSET[1] * 2,
+                    -VIZ_TEXT_OFFSET[1],
+                ]
+            )
 
             label_stack = [
-                (main_label, y_offsets[0], 0.55),
-                (sub_label, y_offsets[1], 0.45),
-                (audit_label, y_offsets[2], 0.40),
+                (main_label, y_offsets[0], VIZ_TEXT_SCALE[0]),
+                (sub_label, y_offsets[1], VIZ_TEXT_SCALE[1]),
+                (audit_label, y_offsets[2], VIZ_TEXT_SCALE[2]),
             ]
 
             # 6. Render Label Stack with Edge-Aware Clamping
             for text, y_off, scale in label_stack:
                 if not text:
                     continue
-
-                (tw, th), _ = cv2.getTextSize(text, font, scale, 1)
-
-                t_x = c.x + 15
+                (tw, th), _ = cv2.getTextSize(text, font, scale, VIZ_TEXT_THICKNESS)
+                t_x = c.x + VIZ_TEXT_OFFSET[0]
                 if t_x + tw + 10 > canvas_w:
-                    t_x = c.x - tw - 15
-
+                    t_x = c.x - tw - VIZ_TEXT_OFFSET[0]
                 t_x = max(5, min(t_x, canvas_w - tw - 5))
                 t_y = max(th + 5, min(c.y + y_off, canvas_h - 10))
                 t_pos = (t_x, t_y)
@@ -256,6 +238,7 @@ class ImageUtils:
                 rect_x1, rect_y1 = t_pos[0] - 5, t_pos[1] - th - 5
                 rect_x2, rect_y2 = t_pos[0] + tw + 5, t_pos[1] + 5
 
+                # Draw background rectangle for label
                 cv2.rectangle(
                     debug_view,
                     (rect_x1, rect_y1),
@@ -263,13 +246,15 @@ class ImageUtils:
                     (0, 0, 0),
                     -1,
                 )
+                # Draw colored border
                 cv2.rectangle(
                     debug_view,
                     (rect_x1, rect_y1),
                     (rect_x2, rect_y2),
                     color,
-                    1,
+                    INNER_THICKNESS,
                 )
+                # Render text
                 cv2.putText(
                     debug_view,
                     text,
@@ -277,7 +262,7 @@ class ImageUtils:
                     font,
                     scale,
                     (255, 255, 255),
-                    1,
+                    VIZ_TEXT_THICKNESS,
                     cv2.LINE_AA,
                 )
 

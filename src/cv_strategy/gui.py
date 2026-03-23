@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core import set_high_dpi_awareness
 from cv_strategy.engine import CVGroundingEngine, GroundingConfig
 from screenshot_service import ScreenshotService
 
@@ -277,15 +278,24 @@ class Worker(QThread):
 
             shot_service = ScreenshotService()
 
-            # Handle PIL Objects
+            # Take a snapshot of current windows
+            shot_service.snapshot_workspace()
+
+            # --- CAPTURE DESKTOP OR APP WINDOW ---
             if self.window_title == "Desktop":
-                self.log_signal.emit("CAPTURING Desktop (PIL Mode)", "INFO")
+                self.log_signal.emit(
+                    "CAPTURING Desktop (minimize & restore immediately)",
+                    "INFO",
+                )
                 active_image = shot_service.capture_desktop()
             else:
                 self.log_signal.emit(f"ISOLATING WINDOW: {self.window_title}", "INFO")
                 active_image, _ = shot_service.capture_app_window(
                     window_title=self.window_title,
                 )
+
+            # Restore immediately after capture
+            shot_service.restore_workspace()
 
             # Pass the PIL image directly to the engine
             results = self.engine.locate_elements(
@@ -637,17 +647,13 @@ class GroundingLab(QMainWindow):
         )
 
     def reset_state(self) -> None:
-        """Reset the entire UI to its initial state using GroundingConfig defaults."""
+        """Reset the entire UI to its initial state but keep START button enabled."""
         # Create a reference for default values
         d = GroundingConfig()
 
-        # Clear file paths
+        # Clear file paths and inputs
         self.icon_path = None
-
-        # Reset buttons
         self.btn_icon.setText("SELECT ICON")
-
-        # Clear text input
         self.query_input.clear()
 
         # Reset checkboxes based on GroundingConfig defaults
@@ -659,8 +665,6 @@ class GroundingLab(QMainWindow):
         self.chk_multiscale.setChecked(d.use_multiscale)
         self.chk_ocr.setChecked(d.use_ocr)
         self.chk_adaptive.setChecked(d.use_adaptive)
-
-        # Note: If these aren't in your dataclass yet, they will use True
         self.chk_sharpen.setChecked(getattr(d, "use_sharpen", True))
         self.chk_upscale.setChecked(getattr(d, "use_upscale", True))
         self.chk_iso.setChecked(getattr(d, "use_iso", True))
@@ -675,7 +679,7 @@ class GroundingLab(QMainWindow):
 
         # Reset progress and cancel button
         self.progress_bar.setValue(0)
-        self.btn_run.setEnabled(False)
+        self.btn_run.setEnabled(True)  # Keep START button clickable
         self.btn_run.setObjectName("action_btn_idle")
         self.btn_run.setText("START DIAGNOSTICS")
         self.btn_run.setStyleSheet("")  # Clear any loading styles
@@ -690,8 +694,8 @@ class GroundingLab(QMainWindow):
         self.console.clear()
         self.last_results = []
 
-        # Update toggle states (to correctly disable checkboxes)
-        self.update_toggle_states()
+        # Skip disabling checkboxes via update_toggle_states
+        # self.update_toggle_states()
 
     def run_engine(self) -> None:
         """Start the grounding engine diagnostics in a background thread."""
@@ -829,6 +833,7 @@ class GroundingLab(QMainWindow):
 
 def run() -> None:
     """Execute the application main loop."""
+    set_high_dpi_awareness()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     gui = GroundingLab()

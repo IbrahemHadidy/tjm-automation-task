@@ -113,7 +113,7 @@ To ensure a consistent, zero-footprint execution environment, the project uses a
 
 The project is organized around two complementary grounding engines — an OpenCV-based perception pipeline and a vision-language model (VLM) — and a shared core for automation, screenshot management, and state orchestration.
 
-1. **ScreenshotService** [(`src/screenshot_service.py`)](src/screenshot_service.py) — Manage workspace state (minimize/restore) and capture high-DPI desktop/app states.
+1. **ScreenshotService** [(`src/screenshot_service.py`)](src/screenshot_service.py) — Manage workspace state (minimize/restore) and capture desktop/app images. **DPI awareness is now centralized in `core.py`.**
 2. **Grounding Engines** ([`src/vlm_strategy/engine.py`](src/vlm_strategy/engine.py), [`src/cv_strategy/engine.py`](src/cv_strategy/engine.py)) — Translate high-level intent into screen coordinates using either AI reasoning or traditional CV+OCR fusion.
 3. **Automation Orchestration** ([`src/notepad_task.py`](src/notepad_task.py), [`src/strategies.py`](src/strategies.py)) — Drive the finite state machine for launching, typing, saving, and switching perception strategies.
 4. **Diagnostic Tooling** ([`src/vlm_strategy/gui.py`](src/vlm_strategy/gui.py), [`src/cv_strategy/gui.py`](src/cv_strategy/gui.py)) — Provide PySide-based interfaces for real-time detection debugging and coordinate verification.
@@ -127,7 +127,6 @@ The system is organized into three main components:
 ### 1. Screenshot & Environment Handling
 
 - Captures desktop screenshots
-- Handles DPI awareness and coordinate normalization
 - Manages workspace state (minimize / restore windows)
 
 ### 2. Grounding Engines
@@ -174,10 +173,10 @@ A strict Finite State Machine (FSM) controller coordinates the automation workfl
 │   │   ├── engine.py            # Orchestrate AI detection, retries, and verification
 │   │   ├── models.py            # Define data contracts (AIDetection, UIElementNode)
 │   │   ├── prompts.py           # Store system instructions and VLM templates
-│   │   ├── utils.py             # Calculate DPI awareness and coordinate scaling
+│   │   ├── utils.py             # Provide image processing helper functions
 │   │   └── gui.py               # PySide6 diagnostic interface for visualizing detections
 │   │
-│   ├── screenshot_service.py    # Manage High-DPI screen captures and windows
+│   ├── screenshot_service.py    # Manage workspace state and capture desktop/app images
 │   ├── core.py                  # Provide foundational primitives and logging
 │   ├── main.py                  # Provide entry points for the automation pipeline
 │   ├── monitoring.py            # Track performance and log visual artifacts
@@ -340,8 +339,7 @@ The AI engine interprets the screen as a coordinate grid, utilizing "Position In
 
 ```mermaid
 flowchart TD
-    Start([resolve_coordinates]) --> DPI[Setup DPI Awareness]
-    DPI --> Scope{Target Window?}
+    Start([resolve_coordinates]) --> Scope{Target Window?}
 
     Scope -->|Desktop| Full[Capture Desktop PIL Image]
     Scope -->|Specific App| FindWin[Locate Target Window Coords]
@@ -401,7 +399,7 @@ flowchart TD
     classDef success fill:#2e7d32,stroke:#a5d6a7,color:#ffffff
     classDef failure fill:#b71c1c,stroke:#ef9a9a,color:#ffffff
 
-    class Start,DPI,Full,FindWin,Iso entry
+    class Start,Full,FindWin,Iso entry
     class Scope,RetryLoop,APIError,ValidJSON,EmptyCheck,RetryDecision,VerifyFlag,VerifyResult decision
     class Call,Extract,VerifyCall,VerifyPrompt ai
     class Scaling,Size,Center,Crop transform
@@ -595,16 +593,16 @@ Although this project targets the Notepad desktop shortcut, the architecture was
 The system utilizes a **Strategy Pattern** (see `strategies.py`). By swapping the `LaunchStrategy`, you can change the entire perception logic without touching the FSM.
 
 - **Configurable Targets:** Target any app (e.g., "Slack", "VS Code", "Terminal") by simply updating `VLM_INSTRUCTION`, `OPENCV_TEXT_QUERY`, and `ICON_PATH`.
-- **Plug-and-Play Engines:** The `NotepadTask` accepts any implementation of `LaunchStrategy`, allowing for future integration of specialized models (e.g., YOLO or Detectron2) with zero refactoring of the core business logic.
+- **Plug-and-Play Engines:** The `NotepadTask` accepts any implementation of `LaunchStrategy`, allowing for future integration of specialized models (e.g., [YOLO](https://github.com/ultralytics/ultralytics) or [Detectron2](https://github.com/facebookresearch/detectron2)) with zero refactoring of the core business logic.
 
 ### 2. Resolution & DPI Independence
 
-The `ScreenshotService` and grounding engines ensure cross-hardware compatibility through two mechanisms:
+Cross-hardware compatibility is ensured through two mechanisms:
 
-- **Hardware Awareness:** The system calls `SetProcessDpiAwarenessContext` to ensure Windows reports physical pixel grids rather than logical scaled coordinates.
-- **Coordinate Normalization:** The vision engines operate on a 0-1000 normalized scale. The transformation to screen space is calculated as:
+- **Hardware Awareness:** DPI handling is centralized in `core.py`, guaranteeing that all screenshots report true pixel grids, independent of OS scaling.
+- **Coordinate Normalization:** Vision engines operate on a 0–1000 normalized scale. Conversion to screen space uses:
   $$Pixel_{coords} = \frac{Normalized_{coords}}{1000} \cdot Resolution_{max}$$
-  This allows identical logic to function perfectly on 1080p, 1440p, or 4K monitors.
+  This ensures identical logic works seamlessly on 1080p, 1440p, and 4K monitors.
 
 ### 3. Precision Grounding & Isolation
 
@@ -619,7 +617,7 @@ Unlike rigid "pixel-hunting" bots, the VLM engine understands **intent**. It can
 
 ## Design Decisions
 
-The following sections explain the reasoning behind the grounding strategies and robustness mechanisms used in this project. The goal was to build a detection system that remains reliable even when desktop conditions change (icon position, background noise, DPI scaling, or partial occlusion).
+The following sections explain the reasoning behind the grounding strategies and robustness mechanisms used in this project. The goal was to build a detection system that remains reliable even when desktop conditions change (icon position, background noise, or partial occlusion).
 
 ### Perception Strategy: Hybrid Grounding
 
@@ -650,7 +648,7 @@ The system employs a **dual-engine approach** to solve the "Grounding Problem" i
 
 ### Future Extensions
 
-- **Local Vision Transformers:** Transitioning from Gemini VLM to local open-vocabulary vision models like **Grounding DINO** or **YOLO-World**. This would eliminate API costs and allow the system to run in completely "air-gapped" (offline) environments.
+- **Local Vision Transformers:** Transitioning from Gemini VLM to local open-vocabulary vision models like [**Grounding DINO**](https://github.com/idea-research/groundingdino) or [**YOLO-World**](https://github.com/ailab-cvc/yolo-world). This would eliminate API costs and allow the system to run in completely "air-gapped" (offline) environments.
 - **Contextual Self-Healing:** Implementing a "retry-with-variation" logic where the bot tries to right-click or use the Start Menu if the desktop shortcut is obscured by another window.
 
 ---
@@ -702,7 +700,7 @@ All detection logic is governed by centralized constants. Use the table below to
 
 - **Artifact Snapshots:** Upon a `FATAL` error, the `RunMonitor` saves a high-contrast debug image to `logs/run_id/errors/` with rendered bounding boxes and confidence scores.
 - **Video Replays:** The system automatically stitches step-by-step screenshots into an `execution_replay.mp4` using OpenCV’s `VideoWriter`, allowing developers to watch the bot's decision-making process in real-time.
-- **Telemetry:** Check `metadata.json` in the log folder for execution times, engine scores, and DPI awareness status.
+- **Telemetry:** Check `metadata.json` in the log folder for execution times and engine scores.
 - **Hardware Safety:** If the mouse is locked via `BlockInput`, the system automatically releases the lock upon task timeout or failure.
 
 ### 4. Hardware & DPI Checklist

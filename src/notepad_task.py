@@ -343,7 +343,10 @@ class NotepadTask:
             # 3. Perform Surgical Masking for Visual Validation
             self.logger.info("Executing surgical mask on target application")
 
-            mask_img, _ = self.screen_service.capture_app_window("Notepad")
+            mask_img, _ = self.screen_service.capture_app_window(
+                "Notepad",
+                minimize_others=False,
+            )
 
             # Save the masked artifact
             artifact_path = (

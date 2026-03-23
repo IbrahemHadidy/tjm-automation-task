@@ -6,6 +6,7 @@ structured JSON telemetry, and execution retry logic with exponential backoff.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
 import os
@@ -35,6 +36,37 @@ API_TIMEOUT_SEC = 10
 
 PROJECT_DIR = Path.home() / "Desktop" / "tjm-project"
 LOG_DIR = PROJECT_DIR / "logs"
+
+# ------------------------------------------------------------
+# PROCESS ENVIRONMENT INITIALIZATION
+# ------------------------------------------------------------
+
+
+def set_high_dpi_awareness() -> None:
+    """Configure the current process to be DPI-aware on Windows.
+
+    This ensures that all screen coordinates (screenshots, mouse input,
+    window geometry) operate on the physical pixel grid instead of
+    scaled logical coordinates.
+
+    Fallback strategies are applied to support different Windows APIs.
+    """
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4  # noqa: N806
+
+    logger = build_logger()
+
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        )
+    except Exception:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception as e:
+                logger.warning("Failed to set DPI awareness: %s", e)
 
 
 # ------------------------------------------------------------

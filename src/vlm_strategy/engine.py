@@ -46,8 +46,6 @@ class AiGroundingEngine:
             ValueError: If GEMINI_API_KEY is not set in the environment.
 
         """
-        AiImageUtils.setup_dpi_awareness()
-
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             msg = "GEMINI_API_KEY not found in environment variables."
@@ -71,6 +69,7 @@ class AiGroundingEngine:
         max_retries: int = 3,
         *,
         verify_after_action: bool = False,
+        restore_workspace: bool = False,
     ) -> list[UIElementNode]:
         """Identify UI elements on screen based on a natural language instruction.
 
@@ -81,6 +80,7 @@ class AiGroundingEngine:
             logger_callback: Optional function to handle status logs.
             max_retries: Number of AI attempts if parsing fails.
             verify_after_action: Whether to perform a secondary crop check.
+            restore_workspace: Whether to snapshot and restore workspace before/after capture.
 
         Returns:
             A list of UIElementNode objects found, sorted by model rank.
@@ -92,6 +92,7 @@ class AiGroundingEngine:
         # 1. Capture Scope (PIL Image + Window Context)
         scope_prompt, exclusion_context, window_rect, raw_img = self._capture_scope(
             target_window,
+            restore_workspace=restore_workspace,
         )
 
         # 2. Prepare AI input image (Draws boundary rectangles if needed)
@@ -124,29 +125,50 @@ class AiGroundingEngine:
     def _capture_scope(
         self,
         target_window: str,
+        *,
+        restore_workspace: bool = False,
     ) -> tuple[str, str, tuple[int, int, int, int] | None, Image.Image]:
-        """Capture the current screen state and defines search boundaries.
+        """Capture the current screen state and define search boundaries.
+
+        This method optionally snapshots and restores the workspace to ensure
+        a clean visual environment before/after capture.
 
         Args:
             target_window: The target window name or 'Desktop'.
+            restore_workspace: Whether to snapshot and restore workspace
+            around the capture for a clean visual state.
 
         Returns:
-            A tuple of (scope_text, exclusion_text, rect, image).
+            A tuple of (scope_text, exclusion_text, window_rect, image):
+                scope_text: Human-readable description of the captured area.
+                exclusion_text: Text describing areas to ignore (e.g., taskbar).
+                window_rect: Coordinates of the target window (x, y, w, h) or None.
+                image: The captured PIL.Image of the screen or window.
 
         """
-        if target_window in ["Desktop", "Entire Desktop"]:
+        if restore_workspace:
+            self.ss.snapshot_workspace()
+
+        response: tuple[str, str, tuple[int, int, int, int] | None, Image.Image]
+
+        if target_window == "Desktop":
             self.log("[INFO] Capturing Full Desktop...")
             img = self.ss.capture_desktop()
-            return (
+            response = (
                 "the entire desktop",
                 "- Ignore the Windows Taskbar and system tray icons.",
                 None,
                 img,
             )
+        else:
+            self.log(f"[INFO] Isolating {target_window}...")
+            img, window_rect = self.ss.capture_app_window(target_window)
+            response = "the area inside the RED rectangle", "", window_rect, img
 
-        self.log(f"[INFO] Isolating {target_window}...")
-        img, window_rect = self.ss.capture_app_window(target_window)
-        return "the area inside the RED rectangle", "", window_rect, img
+        if restore_workspace:
+            self.ss.restore_workspace()
+
+        return response
 
     def _prepare_ai_image(
         self,

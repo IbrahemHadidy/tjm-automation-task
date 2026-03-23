@@ -17,7 +17,7 @@ from cv_strategy.models import Candidate, DetectionMethod, GroundingConfig, Perf
 from cv_strategy.processors.fusion import FusionProcessor
 from cv_strategy.processors.ocr import OCRProcessor
 from cv_strategy.processors.visual import VisualProcessor
-from cv_strategy.utils import ImageUtils, set_high_dpi_awareness
+from cv_strategy.utils import ImageUtils
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -50,7 +50,6 @@ class CVGroundingEngine:
             RuntimeError: If high DPI awareness cannot be set.
 
         """
-        set_high_dpi_awareness()
         self.tesseract_path: str = tesseract_path
         # Set the global path for the pytesseract wrapper
         pytesseract.pytesseract.tesseract_cmd = self.tesseract_path

@@ -13,6 +13,7 @@ import numpy as np
 from cv_strategy.constants import (
     FINAL_DEDUP_RADIUS_FACTOR,
     FUSION_DISTANCE_FACTOR,
+    FUSION_SCORE_BONUS,
     GEOM_BASE_SCORE_WEIGHT,
     GEOM_RATIO_BONUS_WEIGHT,
     MAX_TEMPLATE_HITS,
@@ -189,13 +190,16 @@ class FusionProcessor:
 
                 # Tiered Score Logic: Summation (Range 0.0 to 2.0)
                 # Ensures FUSED results always outrank single-source hits.
-                fused_score = t_hit.score + best_o_hit.score
+                fused_score = min(
+                    2.0,
+                    t_hit.score + best_o_hit.score + FUSION_SCORE_BONUS,
+                )
 
                 final_list.append(
                     Candidate(
                         x=t_hit.x,
                         y=t_hit.y,
-                        score=min(2.0, fused_score),
+                        score=fused_score,
                         method=DetectionMethod.FUSED,
                         img_score=t_hit.score,
                         txt_score=best_o_hit.score,

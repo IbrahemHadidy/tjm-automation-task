@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, ParamSpec
 
 import cv2
 import numpy as np
+
 from cv_strategy.constants import (
     BGR_TO_GRAY,
     BGR_TO_LAB,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from cv2.typing import MatLike
+
     from cv_strategy.models import GroundingConfig
 
 logger = logging.getLogger(__name__)
@@ -358,16 +360,21 @@ class VisualProcessor:
         candidates = []
         for pt in zip(*locations[::-1], strict=False):
             score = float(result_map[pt[1], pt[0]])
-            candidates.append(
-                Candidate(
-                    x=int(pt[0] + width // 2),
-                    y=int(pt[1] + height // 2),
-                    score=score,
-                    method=method,
-                    bbox=(int(pt[0]), int(pt[1]), width, height),
-                    extra=extra or {},
-                ),
+            candidate = Candidate(
+                x=int(pt[0] + width // 2),
+                y=int(pt[1] + height // 2),
+                score=score,
+                method=method,
+                bbox=(int(pt[0]), int(pt[1]), width, height),
+                extra=extra or {},
             )
+            # Filter out invalid / infinite candidates
+            if (
+                np.isfinite(candidate.x)
+                and np.isfinite(candidate.y)
+                and np.isfinite(candidate.score)
+            ):
+                candidates.append(candidate)
         return candidates
 
     def _run_orb_pass(

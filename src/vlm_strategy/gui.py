@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core import set_high_dpi_awareness
 from vlm_strategy.engine import AiGroundingEngine, UIElementNode
 
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
@@ -107,6 +108,7 @@ class AIWorker(QThread):
                 reference_image_path=self.ref_path,
                 verify_after_action=self.verify_after_action,
                 logger_callback=engine_logger,
+                restore_workspace=True,
             )
 
             if not self._is_cancelled:
@@ -532,6 +534,7 @@ class GroundingLab(QMainWindow):
 
 def run() -> None:
     """Execute the main application loop."""
+    set_high_dpi_awareness()
     app = QApplication(sys.argv)
     window = GroundingLab()
     window.showMaximized()

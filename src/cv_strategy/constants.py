@@ -3,181 +3,276 @@
 This module defines the thresholds, scaling factors, and scoring weights used
 across the detection pipeline. All 'FACTOR' constants are relative to the
 target template size (e.g., 0.5 = 50% of icon width/height).
+
+Design principles:
+- Uppercase variables are treated as constants by convention.
+- Values marked with `Final` are true invariants and must not change.
+- Non-Final values are intentionally tunable and may be adjusted during calibration.
+- This module is the single source of truth for all pipeline tuning.
 """
+
+from enum import IntEnum
+from typing import Final
 
 # ============================================
 # Tesseract Engine Settings
+# Global configuration for the Tesseract binary and underlying OCR engine behavior.
 # ============================================
 
-# Engine Mode (OEM) 3: Default, based on what is available (Legacy + LSTM).
-OCR_ENGINE_MODE = 3
+OCR_ENGINE_MODE: Final[int] = 3
+"""Engine Mode (OEM) 3: Default, based on what is available (Legacy + LSTM)."""
 
-# Page Segmentation Modes (PSM)
-# 7: Treat the image as a single text line (Best for isolated labels).
-# 3: Fully automatic page segmentation (Best for full-screen search).
-PSM_SINGLE_LINE = 7
-PSM_AUTO = 3
+PSM_SINGLE_LINE: Final[int] = 7
+"""Page Segmentation Mode (PSM) 7: Treat the image as a single text line (Best for isolated labels)."""
+
+PSM_AUTO: Final[int] = 3
+"""Page Segmentation Mode (PSM) 3: Fully automatic page segmentation (Best for full-screen search)."""
 
 
 # ============================================
 # OCR Thresholds & Scoring
+# Constants used to filter, merge, and score text results extracted by the OCR engine.
 # ============================================
 
-# Minimum Tesseract confidence (0-100) and string length to accept a token.
-OCR_MIN_CONFIDENCE = 10
-OCR_MIN_TOKEN_LENGTH = 2
+OCR_MIN_CONFIDENCE: int = 10
+"""Minimum Tesseract confidence (0-100) to accept a token."""
 
-# Radius in pixels to merge nearly overlapping OCR tokens into a single candidate.
-TOKEN_DEDUP_RADIUS_PX = 15
+OCR_MIN_TOKEN_LENGTH: int = 2
+"""Minimum string length to accept a token."""
 
-# Minimum similarity score (0.0 - 1.0) for fuzzy matching and ROI recovery.
-OCR_RECOVERY_THRESHOLD = 0.5
-OCR_FUZZY_MATCH_THRESHOLD = 0.6
+OCR_RECOVERY_THRESHOLD: float = 0.5
+"""Minimum similarity score (0.0 - 1.0) for ROI recovery."""
 
-# Scoring weights for string similarity logic.
-OCR_EXACT_MATCH_SCORE = 1.0  # Perfect string equality.
-OCR_SUBSTRING_BASE_SCORE = 0.5  # Starting point if query is inside a longer string.
-OCR_SUBSTRING_MATCH_WEIGHT = 0.35  # Multiplier for the length ratio of the match.
-OCR_SIMILARITY_WEIGHT = 0.5  # Weight for Levenshtein distance in fuzzy mode.
+OCR_FUZZY_MATCH_THRESHOLD: float = 0.6
+"""Minimum similarity score (0.0 - 1.0) for fuzzy matching."""
 
-# Penalty applied to recovery matches (0.05) to ensure Global Search results
-# take precedence during Non-Maximum Suppression (NMS).
-OCR_RECOVERY_PENALTY = 0.05
+OCR_EXACT_MATCH_SCORE: float = 1.0
+"""Score awarded for perfect string equality."""
 
-# Internal Mode IDs for the image preprocessing pipeline.
-OCR_MODE_OTSU = 1
-OCR_MODE_INVERTED_OTSU = 2
-OCR_MODE_CUBIC_UPSCALE = 5
-OCR_MODE_GRAY = 8
-OCR_MODE_TOPHAT_UPSCALE_A = 11
-OCR_MODE_TOPHAT_UPSCALE_B = 12
+OCR_SUBSTRING_BASE_SCORE: float = 0.5
+"""Starting point score if the query is found inside a longer string."""
 
-# Modes executed during the initial full-screen 'Global' search pass.
-OCR_GLOBAL_SEARCH_MODES = [
-    OCR_MODE_OTSU,
-    OCR_MODE_INVERTED_OTSU,
-    OCR_MODE_CUBIC_UPSCALE,
-    OCR_MODE_GRAY,
-    OCR_MODE_TOPHAT_UPSCALE_A,
-    OCR_MODE_TOPHAT_UPSCALE_B,
-]
+OCR_SUBSTRING_MATCH_WEIGHT: float = 0.35
+"""Multiplier for the length ratio of the match in substring logic."""
+
+OCR_SIMILARITY_WEIGHT: float = 0.5
+"""Weight for Levenshtein distance in fuzzy mode scoring."""
+
+OCR_RECOVERY_PENALTY: float = 0.05
+"""Penalty applied to recovery matches to ensure Global Search results take precedence."""
+
+
+class OCRPreprocessingMode(IntEnum):
+    """Internal Mode IDs for the image preprocessing pipeline."""
+
+    OTSU = 1
+    INVERTED_OTSU = 2
+    CUBIC_UPSCALE = 5
+    GRAY = 8
+    TOPHAT_UPSCALE_A = 11
+    TOPHAT_UPSCALE_B = 12
+
+
+OCR_GLOBAL_SEARCH_MODES: tuple[OCRPreprocessingMode, ...] = (
+    OCRPreprocessingMode.OTSU,
+    OCRPreprocessingMode.INVERTED_OTSU,
+    OCRPreprocessingMode.CUBIC_UPSCALE,
+    OCRPreprocessingMode.GRAY,
+    OCRPreprocessingMode.TOPHAT_UPSCALE_A,
+    OCRPreprocessingMode.TOPHAT_UPSCALE_B,
+)
+"""Modes executed during the initial full-screen 'Global' search pass."""
 
 
 # ============================================
 # Image Preprocessing & Scaling
+# Constants for color space conversions, resizing, and morphological operations.
 # ============================================
 
-# Standard bit-depth maximum for 8-bit grayscale images.
-MAX_8BIT_VALUE = 255
+MAX_8BIT_VALUE: Final[int] = 255
+"""Standard bit-depth maximum for 8-bit grayscale images."""
 
-# Interpolation methods (Mapping to cv2.INTER_* constants).
-INTERPOLATION_UP = 3  # cv2.INTER_CUBIC (Best for upscaling).
-INTERPOLATION_LOCAL = 1  # cv2.INTER_LINEAR (Standard resizing).
+INTERPOLATION_UP: Final[int] = 3
+"""cv2.INTER_CUBIC: Best for upscaling."""
 
-# Color Space Conversions (Mapping to cv2.COLOR_* constants).
-BGR_TO_GRAY = 6  # cv2.COLOR_BGR2GRAY
-BGR_TO_LAB = 44  # cv2.COLOR_BGR2Lab
+INTERPOLATION_LOCAL: Final[int] = 1
+"""cv2.INTER_LINEAR: Standard resizing."""
 
-# Multipliers for image resolution enhancement before OCR.
-OCR_GLOBAL_UPSCALE_FACTOR = 2.5
-OCR_LOCAL_UPSCALE_FACTOR = 2.0
+BGR_TO_GRAY: Final[int] = 6
+"""cv2.COLOR_BGR2GRAY."""
 
-# Kernel size for morphological Top-hat filtering to isolate text from noisy backgrounds.
-OCR_MORPH_KERNEL_SIZE = (9, 9)
+BGR_TO_LAB: Final[int] = 44
+"""cv2.COLOR_BGR2Lab."""
+
+OCR_GLOBAL_UPSCALE_FACTOR: float = 2.5
+"""Multiplier for image resolution enhancement before global OCR."""
+
+OCR_LOCAL_UPSCALE_FACTOR: float = 2.0
+"""Multiplier for image resolution enhancement before local OCR."""
+
+OCR_MORPH_KERNEL_SIZE: tuple[int, int] = (9, 9)
+"""Kernel size for morphological Top-hat filtering to isolate text."""
 
 
 # ============================================
 # Visual Engine Technical Settings
+# Core algorithmic parameters used for feature matching and template alignment.
 # ============================================
 
-# Template Matching Method (5 = cv2.TM_CCOEFF_NORMED).
-TPL_MATCH_METHOD = 5
+TPL_MATCH_METHOD: Final[int] = 5
+"""Template Matching Method (5 = cv2.TM_CCOEFF_NORMED)."""
 
-# Distance metric for feature matching (6 = cv2.NORM_HAMMING for ORB).
-ORB_NORM_TYPE = 6
+ORB_NORM_TYPE: Final[int] = 6
+"""Distance metric for feature matching (6 = cv2.NORM_HAMMING for ORB)."""
 
 
 # ============================================
 # Geometry & Aspect Ratio Validation
+# Logic and weights for adjusting visual match scores based on shape consistency.
 # ============================================
 
-# The scoring formula is: final_score = original_score * (BASE + (BONUS * deviation))
-# GEOM_BASE_SCORE_WEIGHT: Trust floor for any detected shape.
-GEOM_BASE_SCORE_WEIGHT = 0.8
-# GEOM_RATIO_BONUS_WEIGHT: Extra confidence for perfect aspect ratio matches.
-GEOM_RATIO_BONUS_WEIGHT = 0.2
+GEOM_BASE_SCORE_WEIGHT: float = 0.8
+"""The trust floor for any detected shape.
+Ensures the match score retains at least 80% of its value.
+"""
+
+GEOM_RATIO_BONUS_WEIGHT: float = 0.2
+"""Extra confidence for perfect aspect ratio matches.
+
+Formula:
+Final Score = Match Score * (0.8 + (0.2 * Ratio Deviation))
+
+Note: A deviation of 1.0 (perfect) results in 100% of the Match Score.
+"""
 
 
 # ============================================
 # Template Matching Thresholds
-# All values range from 0.0 (permissive) to 1.0 (strict).
+# Sensitivity settings for the different CV matching algorithms.
 # ============================================
 
-TPL_COLOR_THRESHOLD = 0.7
-TPL_LAB_THRESHOLD = 0.7
-TPL_EDGE_THRESHOLD = 0.4  # Lower due to high sensitivity of Canny edges.
-TPL_GRAY_THRESHOLD = 0.65
-TPL_MULTISCALE_THRESHOLD = 0.65
+TPL_COLOR_THRESHOLD: float = 0.7
+"""Strictness threshold for color-based template matching."""
 
-# Canny Edge detection parameters for the EDGE method.
-CANNY_LOW_THRESHOLD = 50
-CANNY_HIGH_THRESHOLD = 150
+TPL_LAB_THRESHOLD: float = 0.7
+"""Strictness threshold for LAB space similarity."""
 
-# Scale factors for multiscale template matching.
-MULTISCALE_FACTORS = (0.8, 1.25)
+TPL_EDGE_THRESHOLD: float = 0.4
+"""Lower threshold for Canny edge matching due to high sensitivity."""
 
-# Limit raw hits per method to prevent NMS performance degradation.
-MAX_TEMPLATE_HITS = 200
+TPL_GRAY_THRESHOLD: float = 0.65
+"""Strictness threshold for grayscale template matching."""
 
-# Deduplication Radii (Multipliers of template size).
-NMS_RADIUS_FACTOR = 0.6  # Intra-method overlap removal.
-FUSION_DISTANCE_FACTOR = 1.5  # Max distance to pair a visual hit with an OCR label.
-FINAL_DEDUP_RADIUS_FACTOR = 0.7  # Final cross-method cleanup.
-MIN_DEDUPE_RADIUS_FACTOR = 0.8  # Safety floor for deduplication.
+TPL_MULTISCALE_THRESHOLD: float = 0.65
+"""Strictness threshold for multiscale matching passes."""
 
-# Bonus added to the score when both Visual AND OCR confirm the same element.
-FUSION_SCORE_BONUS = 0.1
+CANNY_LOW_THRESHOLD: int = 50
+"""Low threshold for Canny edge detection."""
+
+CANNY_HIGH_THRESHOLD: int = 150
+"""High threshold for Canny edge detection."""
+
+MULTISCALE_FACTORS: tuple[float, float] = (0.8, 1.25)
+"""Scale factors used during multiscale template matching."""
+
+MAX_TEMPLATE_HITS: int = 200
+"""Limit raw hits per method to prevent NMS performance degradation."""
+
+NMS_RADIUS_FACTOR: float = 0.6
+"""Deduplication radius for intra-method overlap removal."""
+
+FUSION_DISTANCE_FACTOR: float = 1.5
+"""Max distance to pair a visual hit with an OCR label."""
+
+FINAL_DEDUP_RADIUS_FACTOR: float = 0.7
+"""Final cross-method cleanup radius factor."""
+
+MIN_DEDUPE_RADIUS_FACTOR: float = 0.8
+"""Safety floor for deduplication radii."""
+
+FUSION_SCORE_BONUS: float = 0.1
+"""Bonus added when both Visual AND OCR confirm the same element."""
 
 
 # ============================================
 # Recovery Search Geometry
-# Relative to the anchor icon's center.
+# Multipliers defining the spatial boundaries when searching for text near an icon.
 # ============================================
 
-RECOVERY_HORIZONTAL_PAD_FACTOR = 0.4  # Width extension for text search.
-RECOVERY_VERTICAL_EXTEND_FACTOR = 1.6  # Height extension (labels are usually below).
-RECOVERY_VERTICAL_OFFSET_PX = 5  # Slight downward shift for the search ROI.
+RECOVERY_HORIZONTAL_PAD_FACTOR: float = 0.4
+"""Width extension for text search relative to icon center."""
+
+RECOVERY_VERTICAL_EXTEND_FACTOR: float = 1.6
+"""Height extension (labels are usually below the icon)."""
+
+RECOVERY_VERTICAL_OFFSET_PX: int = 5
+"""Slight downward shift for the search ROI in pixels."""
 
 
 # ============================================
 # Desktop Detection & Performance
+# Environmental constraints and limits to maintain real-time performance.
 # ============================================
 
-TASKBAR_HEIGHT_PX = 60
-ICON_MIN_WIDTH = 30
-ICON_MAX_WIDTH = 150
-DEFAULT_ICON_SIZE = 64
+TASKBAR_HEIGHT_PX: int = 60
+"""Standard height of the Windows taskbar."""
 
-# Limit the number of sub-regions processed per frame to maintain real-time speeds.
-RECOVERY_QUEUE_LIMIT = 12
+ICON_MIN_WIDTH: int = 30
+"""Minimum pixel width for a valid desktop icon candidate."""
 
-# Feature-based matching (ORB) parameters.
-ORB_MIN_MATCHES = 15
-ORB_SAMPLE_POINTS = 20
-ORB_MAX_FEATURES = 1000
-ORB_DEFAULT_SCORE = 0.9
+ICON_MAX_WIDTH: int = 150
+"""Maximum pixel width for a valid desktop icon candidate."""
+
+DEFAULT_ICON_SIZE: int = 64
+"""Default target size for icon templates."""
+
+RECOVERY_QUEUE_LIMIT: int = 12
+"""Limit on sub-regions processed per frame to maintain speed."""
+
+ORB_MIN_MATCHES: int = 15
+"""Minimum number of ORB feature matches to accept a hit."""
+
+ORB_SAMPLE_POINTS: int = 20
+"""Number of sample points used in ORB validation."""
+
+ORB_MAX_FEATURES: int = 1000
+"""Maximum number of features to detect per frame for ORB."""
+
+ORB_DEFAULT_SCORE: float = 0.9
+"""Fallback score for successful ORB matches."""
 
 
 # ============================================
 # Debug Visualization Settings (BGR)
+# Colors, fonts, and marker sizes used when drawing bounds on debug artifacts.
 # ============================================
 
-COLOR_FUSED = (0, 255, 0)  # Green
-COLOR_OCR = (0, 255, 255)  # Yellow
-COLOR_VISUAL = (255, 255, 0)  # Cyan
+COLOR_FUSED: Final[tuple[int, int, int]] = (0, 220, 0)
+"""Green: Visual + OCR match (balanced for readability)."""
 
-VIZ_MARKER_SIZE = 25
-VIZ_MARKER_THICKNESS = 2
-VIZ_TEXT_SCALE = 0.4
-VIZ_TEXT_THICKNESS = 1
-VIZ_TEXT_OFFSET = (18, 15)
+COLOR_OCR: Final[tuple[int, int, int]] = (0, 230, 220)
+"""Yellow/teal: OCR-only detection (balanced for visibility)."""
+
+COLOR_VISUAL: Final[tuple[int, int, int]] = (230, 230, 0)
+"""Cyan: Visual-only detection (balanced for visibility)."""
+
+VIZ_MARKER_SIZE: Final[int] = 20
+"""Size of the marker used in debug frames (moderate size)."""
+
+VIZ_MARKER_THICKNESS: Final[int] = 2
+"""Thickness of the marker lines (visible but not too bold)."""
+
+VIZ_TEXT_SCALE: Final[tuple[float, float, float]] = (0.48, 0.38, 0.33)
+"""Font scale for debug label text (main, sub, audit) balanced for readability."""
+
+VIZ_TEXT_THICKNESS: Final[int] = 1
+"""Thickness of the font in debug labels."""
+
+VIZ_TEXT_OFFSET: Final[tuple[int, int]] = (16, 25)
+"""Pixel offset for placing text relative to the detection marker (X offset, base Y offset)."""
+
+OUTER_THICKNESS: Final[int] = VIZ_MARKER_THICKNESS * 2
+"""Outer rectangle thickness for bounding boxes (double the inner thickness)."""
+
+INNER_THICKNESS: Final[int] = VIZ_MARKER_THICKNESS
+"""Inner rectangle thickness for bounding boxes (main color border)."""

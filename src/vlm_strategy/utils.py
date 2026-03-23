@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 from typing import TYPE_CHECKING
 
 from PIL import Image, ImageDraw, ImageFont
@@ -17,24 +16,6 @@ class AiImageUtils:
     This class provides static helper methods to bridge the gap between
     normalized AI detections and physical screen pixels.
     """
-
-    @staticmethod
-    def setup_dpi_awareness() -> None:
-        """Configure Windows to report actual pixels rather than scaled ones.
-
-        This is critical for grounding tasks. Without this, on a 150% scaled
-        display, a click at (1000, 1000) might actually land at (1500, 1500).
-        """
-        try:
-            # Per-monitor awareness (highest level)
-            ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
-        except Exception:
-            try:
-                # Fallback for older Windows 8.1/10 versions
-                ctypes.windll.shcore.SetProcessDpiAwareness(1)
-            except Exception:
-                # Basic legacy awareness
-                ctypes.windll.user32.SetProcessDPIAware()
 
     @staticmethod
     def scale_and_center(

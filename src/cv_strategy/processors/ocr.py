@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, Any
 
 import cv2
 import pytesseract
+
 from cv_strategy.constants import (
+    INTERPOLATION_LOCAL,
     INTERPOLATION_UP,
     MAX_8BIT_VALUE,
     OCR_ENGINE_MODE,
@@ -21,11 +23,6 @@ from cv_strategy.constants import (
     OCR_LOCAL_UPSCALE_FACTOR,
     OCR_MIN_CONFIDENCE,
     OCR_MIN_TOKEN_LENGTH,
-    OCR_MODE_CUBIC_UPSCALE,
-    OCR_MODE_INVERTED_OTSU,
-    OCR_MODE_OTSU,
-    OCR_MODE_TOPHAT_UPSCALE_A,
-    OCR_MODE_TOPHAT_UPSCALE_B,
     OCR_MORPH_KERNEL_SIZE,
     OCR_RECOVERY_PENALTY,
     OCR_RECOVERY_THRESHOLD,
@@ -36,6 +33,7 @@ from cv_strategy.constants import (
     RECOVERY_HORIZONTAL_PAD_FACTOR,
     RECOVERY_VERTICAL_EXTEND_FACTOR,
     RECOVERY_VERTICAL_OFFSET_PX,
+    OCRPreprocessingMode,
 )
 from cv_strategy.models import Candidate, DetectionMethod
 from cv_strategy.utils import ImageUtils
@@ -44,6 +42,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from cv2.typing import MatLike
+
     from cv_strategy.models import GroundingConfig
 
 logger = logging.getLogger(__name__)
@@ -97,7 +96,7 @@ class OCRProcessor:
 
             psm_mode = (
                 PSM_SINGLE_LINE
-                if mode_id == OCR_MODE_TOPHAT_UPSCALE_B
+                if mode_id == OCRPreprocessingMode.TOPHAT_UPSCALE_A
                 else self.config.psm
             )
 
@@ -110,9 +109,9 @@ class OCRProcessor:
                 )
 
                 upscale_modes = [
-                    OCR_MODE_CUBIC_UPSCALE,
-                    OCR_MODE_TOPHAT_UPSCALE_A,
-                    OCR_MODE_TOPHAT_UPSCALE_B,
+                    OCRPreprocessingMode.CUBIC_UPSCALE,
+                    OCRPreprocessingMode.TOPHAT_UPSCALE_A,
+                    OCRPreprocessingMode.TOPHAT_UPSCALE_B,
                 ]
                 scale_factor = (
                     OCR_GLOBAL_UPSCALE_FACTOR if mode_id in upscale_modes else 1.0
@@ -220,7 +219,7 @@ class OCRProcessor:
         """
         grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        if mode == OCR_MODE_OTSU:
+        if mode == OCRPreprocessingMode.OTSU:
             return cv2.threshold(
                 grayscale,
                 0,
@@ -228,7 +227,7 @@ class OCRProcessor:
                 cv2.THRESH_BINARY + cv2.THRESH_OTSU,
             )[1]
 
-        if mode == OCR_MODE_INVERTED_OTSU:
+        if mode == OCRPreprocessingMode.INVERTED_OTSU:
             return cv2.threshold(
                 cv2.bitwise_not(grayscale),
                 0,
@@ -236,7 +235,7 @@ class OCRProcessor:
                 cv2.THRESH_BINARY + cv2.THRESH_OTSU,
             )[1]
 
-        if mode == OCR_MODE_CUBIC_UPSCALE:
+        if mode == OCRPreprocessingMode.CUBIC_UPSCALE:
             return cv2.resize(
                 grayscale,
                 (0, 0),
@@ -245,7 +244,10 @@ class OCRProcessor:
                 interpolation=INTERPOLATION_UP,
             )
 
-        if mode in [OCR_MODE_TOPHAT_UPSCALE_A, OCR_MODE_TOPHAT_UPSCALE_B]:
+        if mode in [
+            OCRPreprocessingMode.TOPHAT_UPSCALE_A,
+            OCRPreprocessingMode.TOPHAT_UPSCALE_B,
+        ]:
             upscaled = cv2.resize(
                 grayscale,
                 (0, 0),
@@ -314,7 +316,7 @@ class OCRProcessor:
                 (0, 0),
                 fx=OCR_LOCAL_UPSCALE_FACTOR,
                 fy=OCR_LOCAL_UPSCALE_FACTOR,
-                interpolation=cv2.INTER_LINEAR,
+                interpolation=INTERPOLATION_LOCAL,
             )
             _, thresholded = cv2.threshold(
                 local_upscaled,
