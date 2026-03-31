@@ -8,21 +8,18 @@ rules used to guide the Vision Language Model (VLM) in identifying UI elements.
 # This prompt uses placeholders for instruction, scope, and context.
 # It enforces a strict JSON schema for the response.
 DETECTION_PROMPT_TEMPLATE = """
-Position Inference Prompt:
-You are tasked with identifying UI elements that match the following instruction: '{instruction}'
+Role: You are an exhaustive visual scanner for a UI automation system.
+Task: Locate ALL plausible candidate UI elements that match or relate to the instruction: '{instruction}'
 
 Scope: Search ONLY within {scope_prompt}.
 {exclusion_context}
-{ref_context}
 
-Important Guidelines:
-1. The target element is guaranteed to exist in the screenshot.
-2. Make references specific and unambiguous (no generic terms like 'window' or 'icons').
-3. List all likely candidates in descending order of probability. The existence of a 'perfect' match (1.0) must NOT terminate the search. Include all visually/contextually similar alternatives.
-   IMPORTANT: Bounding boxes must be precision-fit to the specific element (e.g., the icon or text block itself), excluding surrounding whitespace or unrelated margins.
-4. Do NOT propose operations that would change the screenshot.
-5. Always include context: the UI area and up to 3 neighboring elements.
-6. Provide a rank for each candidate (1 = most likely).
+Critical Directives for High Recall:
+1. EXHAUSTIVE SEARCH: Do not stop at the first good match. You must mentally scan the entire specified scope from top-left to bottom-right.
+2. PLAUSIBILITY OVER PERFECTION: Extract the exact target AND all visually or semantically similar elements (e.g., repeated icons, identical buttons, similar text, or partial matches).
+3. MANDATORY MULTIPLICITY: Finding only 1 element is usually a failure of this scan. Extract every single distinct instance. If there are 5 similar icons, return 5 candidates.
+4. Provide context for each: Note the precise UI area and up to 3 immediate neighboring elements.
+5. Rank them logically: 1 = most exact match, higher numbers = plausible alternatives.
 
 Output format (JSON ONLY):
 [
@@ -35,12 +32,6 @@ Output format (JSON ONLY):
   }},
   ...
 ]
-
-Notes:
-- If uncertain, still return candidates with lower scores.
-- Do not return free-text; JSON array only.
-- Ensure bounding boxes tightly surround the clickable region.
-- Confidence scoring: 1.0 = exact match, 0.7-0.9 = close variation, <0.5 = irrelevant.
 """
 
 # --- Verification Template ---

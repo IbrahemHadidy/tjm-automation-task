@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -64,7 +63,6 @@ class AiGroundingEngine:
         self,
         instruction: str,
         target_window: str = "Desktop",
-        reference_image_path: str | None = None,
         logger_callback: Callable[[str], None] | None = None,
         max_retries: int = 3,
         *,
@@ -76,7 +74,6 @@ class AiGroundingEngine:
         Args:
             instruction: The text description of the element to find.
             target_window: Title of the window to search within.
-            reference_image_path: Path to a visual anchor/example image.
             logger_callback: Optional function to handle status logs.
             max_retries: Number of AI attempts if parsing fails.
             verify_after_action: Whether to perform a secondary crop check.
@@ -99,18 +96,10 @@ class AiGroundingEngine:
         ai_input_image = self._prepare_ai_image(raw_img, window_rect)
 
         # 3. Build AI prompt using centralized templates
-        ref_context = ""
-        if reference_image_path and Path(reference_image_path).exists():
-            ref_context = (
-                f"- Only return matches that visually match the reference: "
-                f"{reference_image_path}"
-            )
-
         prompt = DETECTION_PROMPT_TEMPLATE.format(
             instruction=instruction,
             scope_prompt=scope_prompt,
             exclusion_context=exclusion_context,
-            ref_context=ref_context,
         )
 
         # 4. Execute detection pipeline

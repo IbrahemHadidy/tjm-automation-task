@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -40,7 +39,7 @@ from vlm_strategy.engine import AiGroundingEngine, UIElementNode
 
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
 os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "PassThrough"
-os.environ["QT_API"] = "pyqt6"
+os.environ["QT_API"] = "pyside6"
 
 # UI Constants
 BG_DARK = "#0B0E14"
@@ -62,7 +61,6 @@ class AIWorker(QThread):
         engine: AiGroundingEngine,
         instruction: str,
         target_window: str,
-        ref_path: str | None,
         *,
         verify_after_action: bool,
     ) -> None:
@@ -71,7 +69,6 @@ class AIWorker(QThread):
         self.engine = engine
         self.instruction = instruction
         self.target_window = target_window
-        self.ref_path = ref_path
         self.verify_after_action = verify_after_action
         self._is_cancelled = False
 
@@ -105,7 +102,6 @@ class AIWorker(QThread):
             results = self.engine.resolve_coordinates(
                 instruction=self.instruction,
                 target_window=self.target_window,
-                reference_image_path=self.ref_path,
                 verify_after_action=self.verify_after_action,
                 logger_callback=engine_logger,
                 restore_workspace=True,
@@ -232,7 +228,6 @@ class GroundingLab(QMainWindow):
         super().__init__()
         self.engine = AiGroundingEngine()
         self.worker: AIWorker | None = None
-        self.ref_image_path: str | None = None
         self.node_data: list = []
 
         self.setWindowTitle("AI GROUNDING LAB")
@@ -331,24 +326,6 @@ class GroundingLab(QMainWindow):
         t_layout.addWidget(self.checkbox_verify)
         layout.addWidget(task_group)
 
-        # Visual Anchor
-        anchor_group = QGroupBox("3. Visual Anchor")
-        a_layout = QVBoxLayout(anchor_group)
-        btn_row_layout = QHBoxLayout()
-        btn_ref = QPushButton("LOAD")
-        btn_ref.clicked.connect(self.select_reference)
-        btn_clear_ref = QPushButton("CLEAR")
-        btn_clear_ref.clicked.connect(self.clear_anchor)
-        btn_row_layout.addWidget(btn_ref)
-        btn_row_layout.addWidget(btn_clear_ref)
-        self.ref_preview = QLabel("NO IMAGE")
-        self.ref_preview.setFixedSize(60, 60)
-        self.ref_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.ref_preview.setStyleSheet("border: 1px dashed #333; background: #000;")
-        a_layout.addLayout(btn_row_layout)
-        a_layout.addWidget(self.ref_preview)
-        layout.addWidget(anchor_group)
-
         # Logs
         self.reasoning_view = QTextEdit()
         self.reasoning_view.setReadOnly(True)
@@ -441,7 +418,6 @@ class GroundingLab(QMainWindow):
             self.engine,
             instr,
             self.window_selector.currentText(),
-            self.ref_image_path,
             verify_after_action=self.checkbox_verify.isChecked(),
         )
         self.worker.log_signal.connect(self.log_message)
@@ -497,32 +473,6 @@ class GroundingLab(QMainWindow):
                 QTableWidgetItem(", ".join(node["neighbors"])),
             )
             self.results_table.setItem(i, 4, QTableWidgetItem(str(node["rank"])))
-
-    # --------------------------
-    # Reference Image
-    # --------------------------
-    def select_reference(self) -> None:
-        """Load a reference anchor via file dialog."""
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load Anchor",
-            "",
-            "Images (*.png *.jpg)",
-        )
-        if path:
-            self.ref_image_path = path
-            scaled_pix = QPixmap(path).scaled(
-                60,
-                60,
-                Qt.AspectRatioMode.KeepAspectRatio,
-            )
-            self.ref_preview.setPixmap(scaled_pix)
-
-    def clear_anchor(self) -> None:
-        """Remove current visual anchor and clear preview."""
-        self.ref_image_path = None
-        self.ref_preview.setText("NO IMAGE")
-        self.ref_preview.setPixmap(QPixmap())
 
     # --------------------------
     # Close Event
