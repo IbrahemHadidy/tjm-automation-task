@@ -44,34 +44,42 @@ class FusionProcessor:
         """
         self.config = config
 
-    def apply_nms(
+    def apply_smart_nms(
         self,
         candidates: list[Candidate],
-        template_size: int,
+        default_size: int = 32,
     ) -> list[Candidate]:
-        """Apply non-maximum suppression to remove overlapping template hits.
+        """Apply scale-aware non-maximum suppression.
+
+        Unlike standard NMS, this calculates a unique suppression radius for
+        each candidate based on its detected 'base_size'. This allows small
+        toolbar icons and large desktop icons to coexist without
+        accidentally suppressing each other.
 
         Args:
-            candidates: List of raw candidate detections.
-            template_size: Base size of the icon for radius calculation.
+            candidates: List of raw detections from all scale passes.
+            default_size: Fallback pixel width if a candidate lacks scale metadata.
 
         Returns:
-            A filtered list of candidates where redundant overlaps are removed.
+            Deduplicated list of candidates.
 
         """
         if not candidates:
             return []
 
-        # Sort by score descending and cap results to MAX_TEMPLATE_HITS
+        # Sort by score descending
         sorted_hits = sorted(candidates, key=lambda x: x.score, reverse=True)[
             :MAX_TEMPLATE_HITS
         ]
         kept_candidates: list[Candidate] = []
-        distance_threshold_sq = (template_size * NMS_RADIUS_FACTOR) ** 2
 
         for c in sorted_hits:
+            # Use the specific size this icon was found with, or fallback
+            local_size = c.extra.get("base_size", default_size)
+            threshold_sq = (local_size * NMS_RADIUS_FACTOR) ** 2
+
             if not any(
-                ((c.x - a.x) ** 2 + (c.y - a.y) ** 2) < distance_threshold_sq
+                ((c.x - a.x) ** 2 + (c.y - a.y) ** 2) < threshold_sq
                 for a in kept_candidates
             ):
                 kept_candidates.append(c)
@@ -132,73 +140,63 @@ class FusionProcessor:
         self,
         template_hits: list[Candidate],
         ocr_hits: list[Candidate],
-        template_size: int,
+        default_size: int = 32,
     ) -> list[Candidate]:
         """Fuse visual template matches with OCR text hits via spatial proximity.
 
+        This method performs multi-modal reconciliation by pairing visual anchors
+        with nearby OCR results. It uses 'Local Scaling', meaning the search
+        radius for a match is derived from each candidate's specific detected
+        base size rather than a global constant.
+
         Args:
-            template_hits: Candidates found via visual matching.
-            ocr_hits: Candidates found via OCR.
-            template_size: Base size used to determine the search radius.
+            template_hits: Candidates found via visual matching (carrying 'base_size').
+            ocr_hits: Candidates found via global or recovery OCR sweeps.
+            default_size: Fallback pixel width used if a template hit lacks
+                specific scale metadata. Defaults to 32.
 
         Returns:
-            A unified list of candidates, merged where proximity allows,
-            using a 2.0-tiered scoring system (Visual + OCR).
+            A unified list of candidates, merged where proximity allows.
+            Fused results use a tiered scoring system (0.0 to 2.0) to ensure
+            multi-modal evidence always outranks single-source hits.
 
         """
         final_list: list[Candidate] = []
         matched_ocr_indices = set[int]()
         matched_template_indices = set[int]()
 
-        # 1. Fusion Pass: Pair visual hits with proximal OCR hits
+        # 1. Fusion Pass
         for t_idx, t_hit in enumerate(template_hits):
+            # Determine the ruler for THIS specific template hit
+            local_size = t_hit.extra.get("base_size", default_size)
+            fusion_radius = local_size * FUSION_DISTANCE_FACTOR
+
             potential_ocr_matches = [
                 (o_idx, o_hit)
                 for o_idx, o_hit in enumerate(ocr_hits)
                 if o_idx not in matched_ocr_indices
-                and self._euclidean_distance(t_hit, o_hit)
-                < template_size * FUSION_DISTANCE_FACTOR
+                and self._euclidean_distance(t_hit, o_hit) < fusion_radius
             ]
 
             if potential_ocr_matches:
                 matched_template_indices.add(t_idx)
-                # Select the strongest OCR match within range
                 _, best_o_hit = max(potential_ocr_matches, key=lambda x: x[1].score)
 
                 for o_idx, _ in potential_ocr_matches:
                     matched_ocr_indices.add(o_idx)
 
-                # Merge 'extra' metadata from both sources
+                # Merge Logic (Keep the base_size in the fused candidate)
                 merged_extra = t_hit.extra.copy()
                 merged_extra.update(best_o_hit.extra)
 
-                # Add explicit audit metadata
-                merged_extra.update(
-                    {
-                        "visual_source": t_hit.method,
-                        "text_source": best_o_hit.method,
-                        "matched_text": (
-                            best_o_hit.extra.get("text")
-                            or best_o_hit.extra.get("recovered_text")
-                        ),
-                        "raw_visual_score": t_hit.score,
-                        "raw_text_score": best_o_hit.score,
-                        "visual_bbox": t_hit.bbox,
-                        "text_bbox": best_o_hit.bbox,
-                    },
-                )
-
-                # Tiered Score Logic: Summation (Range 0.0 to 2.0)
-                # Ensures FUSED results always outrank single-source hits.
                 fused_score = min(
                     2.0,
                     t_hit.score + best_o_hit.score + FUSION_SCORE_BONUS,
                 )
 
                 final_list.append(
-                    Candidate(
-                        x=t_hit.x,
-                        y=t_hit.y,
+                    replace(
+                        t_hit,
                         score=fused_score,
                         method=DetectionMethod.FUSED,
                         img_score=t_hit.score,
@@ -208,7 +206,7 @@ class FusionProcessor:
                     ),
                 )
 
-        # 2. Leftovers Pass: Include non-merged hits
+        # 2. Add Leftovers
         final_list.extend(
             [
                 t
@@ -220,23 +218,21 @@ class FusionProcessor:
             [o for j, o in enumerate(ocr_hits) if j not in matched_ocr_indices],
         )
 
-        # 3. Final Spatial Deduplication
+        # 3. Final Spatial Deduplication using local candidate sizes
         deduped_results: list[Candidate] = []
-        dedupe_radius = template_size * max(
-            FINAL_DEDUP_RADIUS_FACTOR,
-            MIN_DEDUPE_RADIUS_FACTOR,
-        )
-
-        # Sorting by score ensures FUSED candidates (>1.0) suppress
-        # single-source candidates (<1.0) within the same radius.
         for c in sorted(final_list, key=lambda x: x.score, reverse=True):
+            local_size = c.extra.get("base_size", default_size)
+            dedupe_radius = local_size * max(
+                FINAL_DEDUP_RADIUS_FACTOR,
+                MIN_DEDUPE_RADIUS_FACTOR,
+            )
+
             if not any(
                 self._euclidean_distance(c, existing) < dedupe_radius
                 for existing in deduped_results
             ):
                 deduped_results.append(c)
 
-        # Filter by threshold (threshold applies to both 1.0 and 2.0 scales)
         return [cand for cand in deduped_results if cand.score >= self.config.threshold]
 
     @staticmethod

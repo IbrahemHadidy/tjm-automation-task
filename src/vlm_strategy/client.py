@@ -49,7 +49,6 @@ class AiClient:
             )
             return self._parse_json_list(response.text or "")
         except Exception as e:
-            # Note: Consider using a logger here in a production environment
             print(f"[ERROR] AiClient API failure: {e}")
             return []
 

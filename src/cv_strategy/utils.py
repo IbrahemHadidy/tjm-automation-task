@@ -5,9 +5,11 @@ OpenCV-based image manipulation for the grounding engine.
 """
 
 import logging
+from collections import Counter
 from typing import TYPE_CHECKING
 
 import cv2
+import numpy as np
 
 from cv_strategy.constants import (
     BGR_TO_GRAY,
@@ -123,41 +125,66 @@ class ImageUtils:
         return img
 
     @staticmethod
-    def detect_icon_size(roi: MatLike, config: GroundingConfig) -> int:
-        """Detect the dominant desktop icon width using contour analysis.
+    def detect_icon_sizes(
+        roi: MatLike,
+        config: GroundingConfig,
+        top_n: int = 2,
+    ) -> list[int]:
+        """Detect the N most likely UI element scales using structural contour analysis.
 
-        Analyze edge density and filter for rectangular contours within the
-        expected icon width bounds defined in the configuration.
+        This method identifies common icon sizes by:
+            1. Applying Canny edge detection.
+            2. Performing Morphological Closing to 'seal' fragmented icon sub-components
+               (e.g., merging a gear icon's teeth into a single 48px container).
+            3. Filtering for square-ish contours to ignore text lines and window borders.
+            4. Binning widths to account for anti-aliasing and rendering artifacts.
 
         Args:
-            roi: The region of interest to analyze.
-            config: Grounding configuration containing width bounds.
+            roi: The image region (OpenCV BGR) to analyze.
+            config: Grounding configuration containing min/max icon width bounds.
+            top_n: The maximum number of candidate size clusters to return.
 
         Returns:
-            The detected dominant icon width in pixels.
+            A list of detected icon widths in pixels, sorted by frequency.
+            Returns [DEFAULT_ICON_SIZE] if no valid candidates are found.
 
         """
         min_w = config.min_icon_width
         max_w = config.max_icon_width
 
+        # 1. Pre-process to "Solidify" UI Elements
         gray = cv2.cvtColor(roi, BGR_TO_GRAY)
         edges = cv2.Canny(gray, CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD)
+
+        # SMARTS: Close gaps between edges to find the 'container'
+        kernel = np.ones((5, 5), np.uint8)
+        closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
         contours, _ = cv2.findContours(
-            edges,
+            closed,  # Use the 'closed' edges
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE,
         )
 
-        # PERF401: Optimized width extraction
-        candidate_widths = [
-            w for c in contours if min_w < (w := cv2.boundingRect(c)[2]) < max_w
-        ]
+        # 2. Filter for Square-ish containers
+        valid_widths = []
+        for c in contours:
+            _x, _y, w, h = cv2.boundingRect(c)
+            # Only accept widths in range that are roughly square (Aspect Ratio ~1.0)
+            if min_w < w < max_w:
+                aspect_ratio = w / float(h) if h > 0 else 0
+                if 0.75 < aspect_ratio < 1.25:
+                    # Binning: Round to nearest 4 to group 31px/32px/33px together
+                    valid_widths.append((w // 4) * 4)
 
-        if not candidate_widths:
-            return DEFAULT_ICON_SIZE
+        if not valid_widths:
+            return [DEFAULT_ICON_SIZE]
 
-        # Use max with a count key for efficient dominance detection
-        return max(set(candidate_widths), key=candidate_widths.count)
+        # 3. Frequency Analysis on cleaned data
+        common_peaks = Counter(valid_widths).most_common(top_n)
+
+        # Return unique sizes, sorted by how common they are
+        return [size for size, _ in common_peaks]
 
     @staticmethod
     def draw_candidates(

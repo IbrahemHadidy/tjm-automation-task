@@ -116,32 +116,34 @@ class CVGroundingEngine:
         config: GroundingConfig | None = None,
         callback: LogCallback | None = None,
     ) -> list[Candidate]:
-        """Locate UI elements on screen by executing a multi-stage vision pipeline.
+        """Locate UI elements using a multi-scale, size-aware vision pipeline.
 
         Workflow:
-            1. Convert PIL screenshot to OpenCV BGR.
-            2. Execute Visual Template Matching passes.
-            3. Execute Global OCR sweep.
-            4. Apply NMS and Geometric validation to visual hits.
-            5. Perform Targeted OCR recovery on remaining visual anchors (optional).
-            6. Fuse and filter all evidence into final candidates.
+            1. Analyze ROI to detect all potential icon size clusters (e.g., 32px, 48px).
+            2. Run visual template matching for EVERY detected size cluster.
+            3. Execute global OCR sweep for text-first anchors.
+            4. Apply 'Smart NMS' which deduplicates hits using local scaling.
+            5. Perform Targeted OCR Recovery using search windows relative to
+               each icon's specific detected scale.
+            6. Fuse visual and text evidence into final weighted candidates.
 
         Args:
             screenshot: The raw desktop capture in PIL format.
             icon_path: Path to the template image to find.
             text_query: String label to search for via OCR.
-            config: Configuration overrides for thresholds, scaling, and recovery.
+            config: Configuration overrides for thresholds and recovery.
             callback: Optional logger for progress and debug frames.
 
         Returns:
-            A list of detected Candidate objects sorted by confidence.
+            A list of detected Candidate objects, where each candidate contains
+            the specific 'base_size' it was matched against.
 
         """
         self.perf_stats = []
         safe_config = config or GroundingConfig()
         t0 = time.time()
 
-        # 1. Image Conversion & ROI Setup
+        # 1. Image Conversion
         full_img = cv2.cvtColor(np.array(screenshot), RGB_TO_BGR)
         self.last_raw_frame = full_img.copy()
         desktop_roi = ImageUtils.crop_to_desktop(full_img)
@@ -151,46 +153,54 @@ class CVGroundingEngine:
         if self.should_abort():
             return []
 
-        # 2. Heuristic Detection
-        target_size = ImageUtils.detect_icon_size(desktop_roi, safe_config)
+        # 2. Size Detection
+        candidate_sizes = ImageUtils.detect_icon_sizes(desktop_roi, safe_config)
 
-        # 3. Probabilistic Features
-        template_hits = self._run_template_passes(
-            desktop_roi,
-            icon_path,
-            target_size,
-            safe_config,
-            callback,
-        )
+        # 3. Visual Search (Casts a wide net across all potential scales)
+        template_hits = []
+        if icon_path:
+            for size in candidate_sizes:
+                hits = self._run_template_passes(
+                    desktop_roi,
+                    icon_path,
+                    size,
+                    safe_config,
+                    callback,
+                )
+                # IMPORTANT: Inside _run_template_passes, each hit should
+                # now have c.extra["base_size"] = size
+                template_hits.extend(hits)
+
+        # 4. Global OCR Sweep
         ocr_hits = self._run_ocr(desktop_roi, text_query, safe_config, callback)
 
-        # 4. Refine Visual Evidence
+        # 5. FIXED: Size-Aware Refinement
         if self.fusion_processor is None:
             self.fusion_processor = FusionProcessor(safe_config)
 
-        templates = self.fusion_processor.apply_nms(template_hits, target_size)
+        # We no longer pass a single target_size.
+        # The processor must now look at Candidate.extra["base_size"]
+        templates = self.fusion_processor.apply_smart_nms(template_hits)
+
         if icon_path:
             templates = self.fusion_processor.validate_geometry(icon_path, templates)
 
-        # 5. Targeted Recovery (Contextual OCR) - only if enabled
+        # 6. FIXED: Recovery using candidate-specific sizes
         if safe_config.enable_recovery:
             ocr_hits.extend(
                 self._targeted_recovery(
                     desktop_roi,
                     templates,
                     text_query,
-                    target_size,
+                    # We pass the default as a fallback only
+                    candidate_sizes[0],
                     safe_config,
                     callback,
                 ),
             )
 
-        # 6. Final Fusion & Confidence Filtering
-        final_candidates = self.fusion_processor.fuse_and_filter(
-            templates,
-            ocr_hits,
-            target_size,
-        )
+        # 7. Final Fusion (Filtering logic now uses local candidate scale)
+        final_candidates = self.fusion_processor.fuse_and_filter(templates, ocr_hits)
 
         self._report_results(self.last_raw_frame.copy(), final_candidates, t0, callback)
         return final_candidates
@@ -266,7 +276,9 @@ class CVGroundingEngine:
             should_abort=self.should_abort,
         )
 
-        self.perf_stats.extend(self.visual_processor.last_stats)
+        for hit in hits:
+            hit.extra["base_size"] = target_size
+
         return hits
 
     def _run_ocr(
