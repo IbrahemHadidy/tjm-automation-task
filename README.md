@@ -415,7 +415,6 @@ flowchart TD
 - **Archive Old Posts:** Before starting, the system moves any existing `.txt` results from the project directory to an `/archive` folder.
 - **Window Snapshot:** The automation captures the current state of visible windows to restore your workspace after execution.
 - **Hardware Lock:** Hardware input (mouse and keyboard) is programmatically blocked via `BlockInput` during the **Launch Sequence** to prevent accidental clicks.
-- **Dynamic Interference Watchdog:** During non-locked phases, a background watchdog tracks mouse pixel drift. If user interference is detected, the system takes a mid-run snapshot of the workspace, pauses execution until the mouse is stable for a set duration, restores the workspace, and seamlessly resumes the FSM.
 
 ---
 
@@ -458,7 +457,6 @@ flowchart TD
 
 - **Strict FSM Orchestration:** The core workflow is governed by a strict Finite State Machine. Every transition (e.g., `LAUNCH` to `WRITE`) resets background watchdog timers and emits structured telemetry, preventing the system from desyncing from the UI state.
 - **Granular Run Metrics & Structured JSON Logging:** Execution telemetry is managed by a `StructuredLogger` that outputs standard JSON. At the end of a run, a `RunMetrics` schema is finalized into a `metadata.json` manifest, capturing total processed counts, specific failure categories (launch vs. save failures), success rates, and exact execution timings in seconds for every FSM state.
-- **Dynamic User Interference Watchdog:** A background poller tracks user mouse drift. If the user moves the mouse to take control, the automation automatically pauses, waits for stability, and gracefully resumes without failing the run.
 - **Centralized Exponential Retry Strategy:** A higher-order `retry` function manages transient failures with exponential backoff and jitter. This is applied to network I/O, brittle UI dialogs, and the initial application launch sequence.
 - **Page Object Model (POM) Isolation:** Low-level keystrokes are abstracted away from the FSM into a `NotepadDriver`. This prevents rogue keystrokes from leaking into the OS if the target window loses focus.
 - **Surgical Process Cleanup:** Instead of blindly killing all Notepad instances, the FSM tracks the specific `bot_pid` initiated by the automation and gracefully terminates only the bot-owned process via `psutil`.

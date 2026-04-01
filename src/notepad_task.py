@@ -30,7 +30,6 @@ from drivers import NotepadDriver
 from monitoring import RunMetrics, RunMonitor
 from screenshot_service import ScreenshotService
 from utils import (
-    check_for_interference,
     get_pid_from_hwnd,
     kill_bot_process_only,
     preserve_clipboard,
@@ -522,13 +521,6 @@ class NotepadTask:
                     # Immediate exit if terminal state is reached
                     if self._handle_terminal_state():
                         break
-
-                    # Detect user interference to avoid fighting for desktop control
-                    check_for_interference(
-                        self._last_mouse_pos,
-                        screen_service=self.screen_service,
-                        logger=self.logger,
-                    )
 
                     # Dispatch handler for the current state
                     handler = self._state_handlers.get(self.state)

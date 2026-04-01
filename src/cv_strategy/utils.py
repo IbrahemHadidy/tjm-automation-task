@@ -56,49 +56,6 @@ class ImageUtils:
         return img[0 : h - TASKBAR_HEIGHT_PX, 0:w]
 
     @staticmethod
-    def crop_around_anchor(
-        img: MatLike,
-        candidate: Candidate,
-        target_size: int,
-    ) -> MatLike:
-        """Crop a square region around a visual anchor candidate.
-
-        This function is used for targeted OCR recovery, providing a
-        localized region of interest centered on the candidate.
-
-        Args:
-            img: Full-screen image in BGR format.
-            candidate: The anchor candidate around which to crop.
-            target_size: Size in pixels of the square crop (width = height).
-
-        Returns:
-            Cropped image region centered on the candidate, clipped to
-            remain within image boundaries.
-
-        Notes:
-            - If the candidate has a `bbox`, the center is computed from it;
-              otherwise, uses candidate `(x, y)` coordinates.
-            - Ensures the crop does not exceed image borders.
-
-        """
-        h, w = img.shape[:2]
-
-        # Determine center of crop
-        if hasattr(candidate, "bbox") and candidate.bbox:
-            bx, by, bw, bh = candidate.bbox
-            cx, cy = bx + bw // 2, by + bh // 2
-        else:
-            cx, cy = candidate.x, candidate.y
-
-        half = target_size // 2
-        x1 = max(0, cx - half)
-        y1 = max(0, cy - half)
-        x2 = min(w, cx + half)
-        y2 = min(h, cy + half)
-
-        return img[y1:y2, x1:x2]
-
-    @staticmethod
     def enhance_contrast(img: MatLike) -> MatLike:
         """Apply CLAHE enhancement to improve recognition in low-contrast scenes.
 
