@@ -52,6 +52,27 @@ class AiClient:
             print(f"[ERROR] AiClient API failure: {e}")
             return []
 
+    def generate_verification(self, prompt: str, image: Image.Image) -> str:
+        """Send a verification prompt and image to the model.
+
+        Args:
+            prompt: Verification instruction.
+            image: Cropped region to verify.
+
+        Returns:
+            Raw model response text.
+
+        """
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_id,
+                contents=[prompt, image],
+            )
+        except Exception as e:
+            print(f"[ERROR] AiClient verification failure: {e}")
+            return "error"
+        return response.text or "unknown"
+
     def _parse_json_list(self, text: str) -> list[AIDetection]:
         """Extract and parses a JSON array from the raw AI string response.
 

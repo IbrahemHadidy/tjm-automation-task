@@ -288,11 +288,9 @@ class AiGroundingEngine:
         verify_crop = current_img.crop(box)
         verify_prompt = VERIFICATION_PROMPT_TEMPLATE.format(instruction=instruction)
 
-        resp = self.client.client.models.generate_content(
-            model=self.client.model_id,
-            contents=[verify_prompt, verify_crop],
+        result = self.client.generate_verification(
+            verify_prompt,
+            verify_crop,
         )
-
-        result = resp.text or "unknown"
         self.log(f"[INFO] Verification result: {result}")
         return result
